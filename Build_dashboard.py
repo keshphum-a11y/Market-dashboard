@@ -1,4 +1,5 @@
 import datetime as dt
+import io
 import math
 import time
 from io import StringIO
@@ -43,11 +44,31 @@ def tag(name, content='', cls=''):
     return LT + name + c + GT + str(content) + LT + '/' + name + GT
 
 
-def n(v):
+def indian(v, dec=0):
+    """Indian digit grouping, for example 1,41,519 and 12,34,567.89."""
     try:
-        return format(int(round(float(v))), ',')
+        x = float(v)
     except Exception:
         return str(v)
+    if pd.isna(x):
+        return ''
+    s = format(abs(x), '.' + str(dec) + 'f')
+    neg = x < 0 and float(s) != 0
+    ip, _, fp = s.partition('.')
+    if len(ip) > 3:
+        head, tail = ip[:-3], ip[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        ip = ','.join(parts + [tail])
+    return ('-' if neg else '') + ip + (('.' + fp) if dec else '')
+
+
+def n(v):
+    return indian(v, 0)
 
 
 def sgn(v):
@@ -65,8 +86,8 @@ def fmt(v):
         if pd.isna(v):
             return ''
         if v != int(v) and abs(v) < 1000:
-            return format(v, ',.2f')
-        return format(int(round(v)), ',')
+            return indian(v, 2)
+        return indian(v, 0)
     return str(v)
 
 
@@ -192,28 +213,32 @@ def load_participant_file(d):
     return None
 
 
-def last_two_files():
+def last_files(k=3):
     found = []
-    for back in range(0, 12):
+    for back in range(0, 16):
         d = dt.datetime.now(IST) - dt.timedelta(days=back)
         if d.weekday() >= 5:
             continue
         df = load_participant_file(d)
         if df is not None:
             found.append((d.strftime('%d %b %Y'), df))
-        if len(found) == 2:
+        if len(found) == k:
             break
     return found
 
 
 GROUPS = [
     ('Index Futures', 'Future Index Long', 'Future Index Short'),
-    ('Stock Futures', 'Future Stock Long', 'Future Stock Short'),
     ('Index Call Options', 'Option Index Call Long', 'Option Index Call Short'),
     ('Index Put Options', 'Option Index Put Long', 'Option Index Put Short'),
+    ('Stock Futures', 'Future Stock Long', 'Future Stock Short'),
     ('Stock Call Options', 'Option Stock Call Long', 'Option Stock Call Short'),
     ('Stock Put Options', 'Option Stock Put Long', 'Option Stock Put Short'),
 ]
+
+# +1: buying is bullish (futures, calls). -1: buying is bearish (puts).
+POLARITY = {'Index Futures': 1, 'Stock Futures': 1, 'Index Call Options': 1, 'Stock Call Options': 1,
+            'Index Put Options': -1, 'Stock Put Options': -1}
 
 
 def find_col(df, wanted):
@@ -224,50 +249,112 @@ def find_col(df, wanted):
     return None
 
 
+def pull(df, who, lname, sname):
+    try:
+        r = df[df['Client Type'] == who]
+        return float(r[find_col(df, lname)].iloc[0]), float(r[find_col(df, sname)].iloc[0])
+    except Exception:
+        return None
+
+
 def participant_data(files):
     if not files:
         return None
     now = files[0][1]
     prev = files[1][1] if len(files) > 1 else None
+    prev2 = files[2][1] if len(files) > 2 else None
     out = {}
     for seg, lname, sname in GROUPS:
         for who in WHO:
-            try:
-                rn = now[now['Client Type'] == who]
-                lg = float(rn[find_col(now, lname)].iloc[0])
-                sh = float(rn[find_col(now, sname)].iloc[0])
-            except Exception:
+            a = pull(now, who, lname, sname)
+            if not a:
                 continue
-            d = {'lg': lg, 'sh': sh, 'net': lg - sh, 'plg': None, 'psh': None, 'pnet': None, 'chg': None}
-            if prev is not None:
-                try:
-                    rp = prev[prev['Client Type'] == who]
-                    plg = float(rp[find_col(prev, lname)].iloc[0])
-                    psh = float(rp[find_col(prev, sname)].iloc[0])
-                    d['plg'], d['psh'], d['pnet'] = plg, psh, plg - psh
-                    d['chg'] = (lg - sh) - (plg - psh)
-                except Exception:
-                    pass
+            lg, sh = a
+            d = {'lg': lg, 'sh': sh, 'net': lg - sh, 'plg': None, 'psh': None, 'pnet': None,
+                 'chg': None, 'dlg': None, 'dsh': None, 'p2net': None}
+            b = pull(prev, who, lname, sname) if prev is not None else None
+            if b:
+                d['plg'], d['psh'], d['pnet'] = b[0], b[1], b[0] - b[1]
+                d['dlg'], d['dsh'] = lg - b[0], sh - b[1]
+                d['chg'] = (lg - sh) - (b[0] - b[1])
+            c = pull(prev2, who, lname, sname) if prev2 is not None else None
+            if c:
+                d['p2net'] = c[0] - c[1]
             out[(seg, who)] = d
     return out or None
 
 
-def participant_table(pdata):
+def cls_for(v, pol):
+    try:
+        x = float(v) * pol
+    except Exception:
+        return ''
+    if pd.isna(x):
+        return ''
+    return 'pos' if x > 0 else ('neg' if x < 0 else '')
+
+
+def move_text(v, up, down):
+    if v is None:
+        return ''
+    if v == 0:
+        return 'No change'
+    return (up if v > 0 else down) + ' ' + n(abs(v))
+
+
+def build_table(headers, rows):
+    head = tag('tr', ''.join(tag('th', h) for h in headers))
+    body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
+    return tag('div', tag('table', head + body), 'scroll')
+
+
+def participant_summary_table(pdata):
+    """Net contracts bought (+) or sold (-) today, every participant in every segment."""
     if not pdata:
-        return None
+        return ''
+    segs = [g[0] for g in GROUPS]
     rows = []
-    for seg, _, _ in GROUPS:
-        first = True
-        for who in WHO:
+    any_val = False
+    for who in WHO:
+        r = [(who, '')]
+        for seg in segs:
             d = pdata.get((seg, who))
-            if not d:
-                continue
-            rows.append({'Segment': seg if first else '', 'Participant': who,
-                         'Long (today)': d['lg'], 'Short (today)': d['sh'], 'Net (today)': d['net'],
-                         'Long (prev day)': d['plg'], 'Short (prev day)': d['psh'],
-                         'Net (prev day)': d['pnet'], 'Change in net': d['chg']})
-            first = False
-    return pd.DataFrame(rows) if rows else None
+            if d and d['chg'] is not None:
+                any_val = True
+                r.append((sgn(d['chg']), cls_for(d['chg'], POLARITY[seg])))
+            else:
+                r.append(('', ''))
+        rows.append(r)
+    if not any_val:
+        return ''
+    return build_table(['Participant'] + segs, rows)
+
+
+def participant_segment_table(pdata, seg, files):
+    pol = POLARITY[seg]
+    dates = [f[0] for f in files]
+    heads = ['Participant', 'Total longs', 'Total shorts', 'Change in longs', 'Change in shorts',
+             'Net bought / sold today', 'Net position ' + dates[0]]
+    if len(dates) > 1:
+        heads.append('Net position ' + dates[1])
+    if len(dates) > 2:
+        heads.append('Net position ' + dates[2])
+    rows = []
+    for who in WHO:
+        d = pdata.get((seg, who))
+        if not d:
+            continue
+        r = [(who, ''), (n(d['lg']), ''), (n(d['sh']), ''),
+             (move_text(d['dlg'], 'Added', 'Closed'), cls_for(d['dlg'], pol)),
+             (move_text(d['dsh'], 'Added', 'Closed'), cls_for(d['dsh'], -pol)),
+             (move_text(d['chg'], 'Bought', 'Sold'), cls_for(d['chg'], pol)),
+             (sgn(d['net']), cls_for(d['net'], pol))]
+        if len(dates) > 1:
+            r.append((sgn(d['pnet']) if d['pnet'] is not None else '', cls_for(d['pnet'], pol)))
+        if len(dates) > 2:
+            r.append((sgn(d['p2net']) if d['p2net'] is not None else '', cls_for(d['p2net'], pol)))
+        rows.append(r)
+    return build_table(heads, rows) if rows else ''
 
 
 def share_long(lg, sh):
@@ -309,7 +396,68 @@ def fut_sentence(who, d):
     return s, sl
 
 
-def participant_analysis(pdata):
+def _mv(v, up, down):
+    if v > 0:
+        return up + ' ' + n(v)
+    if v < 0:
+        return down + ' ' + n(abs(v))
+    return 'unchanged'
+
+
+def seg_phrase(label, d, pol):
+    if not d or d['dlg'] is None:
+        return ''
+    s = label + ': longs ' + _mv(d['dlg'], 'added', 'closed') + ' and shorts ' + _mv(d['dsh'], 'added', 'closed')
+    if d['dlg'] > 0 and d['dsh'] < 0:
+        s += ' (fresh longs with short covering, a decisive move)'
+    elif d['dlg'] < 0 and d['dsh'] > 0:
+        s += ' (longs closed while shorts were added, a decisive move the other way)'
+    elif d['dlg'] > 0 and d['dsh'] > 0:
+        s += ' (both sides added, which looks like hedging or spread activity and not a one-way view)'
+    elif d['dlg'] < 0 and d['dsh'] < 0:
+        s += ' (both sides reduced, positions being squared off, common near expiry)'
+    s += ', so the net moved ' + sgn(d['chg'])
+    eff = pol * d['chg']
+    s += ', a ' + ('bullish' if eff > 0 else ('bearish' if eff < 0 else 'neutral')) + ' change'
+    return s
+
+
+ROLE_TEXT = {
+    'FII': 'Foreign institutions are the group whose index futures positioning is followed most closely, because it tends to lead direction.',
+    'DII': 'Domestic institutions mostly hedge large equity portfolios, so their derivative changes are better read as hedging than as a directional call.',
+    'Client': 'Clients are mainly retail and individual traders, a crowd gauge that is often on the other side of institutions near turning points.',
+    'Pro': 'Pro desks run arbitrage and market-making books, so their numbers are largely a balancing item against the other groups.',
+}
+
+
+def activity_paragraphs(pdata, files):
+    out = []
+    if not pdata:
+        return out
+    for who in WHO:
+        parts = []
+        for seg, label in [('Index Futures', 'index futures'), ('Index Call Options', 'index call options'),
+                           ('Index Put Options', 'index put options')]:
+            t = seg_phrase(label, pdata.get((seg, who)), POLARITY[seg])
+            if t:
+                parts.append(t)
+        if parts:
+            out.append('What ' + who + ' did today. ' + '. '.join(p[0].upper() + p[1:] for p in parts) + '. For puts the colours are reversed: adding long puts is bearish and adding short puts is bullish. ' + ROLE_TEXT[who])
+    f = pdata.get(('Index Futures', 'FII'))
+    if f and f['pnet'] is not None and f['p2net'] is not None and files and len(files) > 2:
+        a, b, c = f['p2net'], f['pnet'], f['net']
+        t = 'Two-session trend in FII index futures: net position ' + sgn(a) + ' on ' + files[2][0] + ', ' + sgn(b) + ' on ' + files[1][0] + ' and ' + sgn(c) + ' on ' + files[0][0] + '. '
+        if c > b > a:
+            t += 'Foreigners have been moving toward long for two sessions running, a building signal that is stronger than a single-day change.'
+        elif c < b < a:
+            t += 'Foreigners have been moving toward short for two sessions running, a building signal that is stronger than a single-day change.'
+        else:
+            t += 'The direction was not consistent across the two sessions, so treat the latest change as tentative until a second session confirms it.'
+        out.append(t)
+    return out
+
+
+def participant_analysis(pdata, files=None):
     if not pdata:
         return []
     out = []
@@ -400,21 +548,24 @@ def participant_analysis(pdata):
         longs = [w for w, v in nets.items() if v > 0]
         shorts = [w for w, v in nets.items() if v < 0]
         out.append('Who is on which side (index futures): net long are ' + (', '.join(longs) if longs else 'nobody') + '; net short are ' + (', '.join(shorts) if shorts else 'nobody') + '. Futures are a zero-sum market, so every net long is matched by a net short elsewhere. The informative question is which side is the stronger hand: when foreign institutions and Pro are short while Client is long, the weaker hands hold the long side and a fall tends to be sharper; when FIIs are long against a short retail crowd, a rise tends to be better supported.')
-    return out
+    return activity_paragraphs(pdata, files) + out
 
 
 # ================= OPTION CHAIN / OPEN INTEREST =================
 def option_chain_nse(symbol='NIFTY'):
     data = nse_get('https://www.nseindia.com/api/option-chain-indices?symbol=' + symbol)
     if not data:
-        return None, None
+        return None, None, None
     rows = []
     for rec in data['records']['data']:
         ce, pe = rec.get('CE', {}), rec.get('PE', {})
         rows.append({'Expiry': rec['expiryDate'], 'Strike': rec['strikePrice'],
                      'Call OI': ce.get('openInterest', 0), 'Call Chg OI': ce.get('changeinOpenInterest', 0),
                      'Put OI': pe.get('openInterest', 0), 'Put Chg OI': pe.get('changeinOpenInterest', 0)})
-    return pd.DataFrame(rows), data['records']['underlyingValue']
+    if not rows:
+        return None, None, None
+    label = 'Live NSE option chain' + (' (' + str(data['records']['timestamp']) + ')' if data['records'].get('timestamp') else '')
+    return pd.DataFrame(rows), data['records']['underlyingValue'], label
 
 
 def option_chain_sensex():
@@ -423,7 +574,7 @@ def option_chain_sensex():
         h['Referer'] = 'https://www.bseindia.com/'
         r = requests.get('https://api.bseindia.com/BseIndiaAPI/api/DerivOptionChain_IV/w?Expiry=&scrip_cd=1&strprice=0', headers=h, timeout=20)
         if r.status_code != 200:
-            return None, None
+            return None, None, None
         js = r.json()
         rows = []
         for rec in js.get('Table', []):
@@ -431,11 +582,95 @@ def option_chain_sensex():
                          'Call OI': float(rec.get('C_OI', 0) or 0), 'Call Chg OI': float(rec.get('C_Chg_OI', 0) or 0),
                          'Put OI': float(rec.get('P_OI', 0) or 0), 'Put Chg OI': float(rec.get('P_Chg_OI', 0) or 0)})
         if not rows:
-            return None, None
+            return None, None, None
         df = pd.DataFrame(rows)
-        return df, float(df['Strike'].median())
+        return df, float(df['Strike'].median()), 'Live BSE option chain'
     except Exception:
+        return None, None, None
+
+
+# ---- last-trading-session fallback (exchange end-of-day F&O files, "bhavcopy")
+def norm_name(c):
+    return ''.join(ch for ch in str(c).lower() if ch.isalnum())
+
+
+def pick_col(df, *names):
+    m = {norm_name(c): c for c in df.columns}
+    for nm in names:
+        if norm_name(nm) in m:
+            return m[norm_name(nm)]
+    return None
+
+
+def read_bhav(content):
+    if content[:2] == b'PK':
+        return pd.read_csv(io.BytesIO(content), compression='zip')
+    return pd.read_csv(io.BytesIO(content))
+
+
+def bhav_url(d, exch):
+    ymd = d.strftime('%Y%m%d')
+    if exch == 'BSE':
+        return 'https://www.bseindia.com/download/Bhavcopy/Derivative/BhavCopy_BSE_FO_0_0_0_' + ymd + '_F_0000.csv'
+    return 'https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_' + ymd + '_F_0000.csv.zip'
+
+
+def load_bhav(d, exch='NSE'):
+    try:
+        r = requests.get(bhav_url(d, exch), headers=HEADERS, timeout=30)
+        if r.status_code == 200 and len(r.content) > 500:
+            return read_bhav(r.content)
+    except Exception:
+        pass
+    return None
+
+
+def chain_from_bhav(df, symbol):
+    sym = pick_col(df, 'TckrSymb', 'Symbol')
+    opt = pick_col(df, 'OptnTp', 'Option Type')
+    strike = pick_col(df, 'StrkPric', 'Strike Price')
+    exp = pick_col(df, 'XpryDt', 'Expiry Date')
+    oi = pick_col(df, 'OpnIntrst', 'Open Interest')
+    chg = pick_col(df, 'ChngInOpnIntrst', 'Change in OI')
+    und = pick_col(df, 'UndrlygPric')
+    if None in (sym, opt, strike, exp, oi):
         return None, None
+    x = df[(df[sym].astype(str).str.strip() == symbol) & (df[opt].astype(str).str.strip().isin(['CE', 'PE']))].copy()
+    if x.empty:
+        return None, None
+    x['_e'] = pd.to_datetime(x[exp], errors='coerce').dt.strftime('%d-%b-%Y')
+    x['_k'] = pd.to_numeric(x[strike], errors='coerce')
+    x['_oi'] = pd.to_numeric(x[oi], errors='coerce').fillna(0)
+    x['_ch'] = pd.to_numeric(x[chg], errors='coerce').fillna(0) if chg else 0
+    x['_t'] = x[opt].astype(str).str.strip()
+    x = x.dropna(subset=['_e', '_k'])
+    rows = []
+    for (e, k), g in x.groupby(['_e', '_k']):
+        ce, pe = g[g['_t'] == 'CE'], g[g['_t'] == 'PE']
+        rows.append({'Expiry': e, 'Strike': float(k),
+                     'Call OI': float(ce['_oi'].sum()), 'Call Chg OI': float(ce['_ch'].sum()),
+                     'Put OI': float(pe['_oi'].sum()), 'Put Chg OI': float(pe['_ch'].sum())})
+    if not rows:
+        return None, None
+    spot = None
+    if und:
+        v = pd.to_numeric(x[und], errors='coerce').dropna()
+        spot = float(v.median()) if len(v) else None
+    return pd.DataFrame(rows), spot
+
+
+def bhavcopy_chain(symbol='NIFTY', exch='NSE'):
+    for back in range(0, 12):
+        d = dt.datetime.now(IST) - dt.timedelta(days=back)
+        if d.weekday() >= 5:
+            continue
+        df = load_bhav(d, exch)
+        if df is None:
+            continue
+        chain, spot = chain_from_bhav(df, symbol)
+        if chain is not None:
+            return chain, spot, 'Last trading session (' + d.strftime('%d %b %Y') + '), ' + exch + ' F&O end-of-day file'
+    return None, None, None
 
 
 def pick_expiry(df):
@@ -576,7 +811,7 @@ def ma_analysis(name, last, df):
     valid = df.dropna(subset=['SMA'])
     above = [int(r['Period (days)']) for _, r in valid.iterrows() if r['Price vs SMA (%)'] > 0]
     below = [int(r['Period (days)']) for _, r in valid.iterrows() if r['Price vs SMA (%)'] <= 0]
-    t = name + ' closed at ' + format(last, ',.2f') + ', above ' + str(len(above)) + ' of ' + str(len(valid)) + ' simple moving averages (' + (', '.join(str(a) for a in above) if above else 'none') + ' day). '
+    t = name + ' closed at ' + indian(last, 2) + ', above ' + str(len(above)) + ' of ' + str(len(valid)) + ' simple moving averages (' + (', '.join(str(a) for a in above) if above else 'none') + ' day). '
     if len(above) == len(valid):
         t += 'Price is above every average, a fully bullish structure. Trend-following funds and institutions are typically long in this state, so pullbacks to the 20 and 50 day averages are normally bought. '
     elif not above:
@@ -703,7 +938,7 @@ def days_to_expiry(exp):
         return None, None
 
 
-def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
+def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     bull, bear = [], []
     st = {'score': 0.0}
 
@@ -739,7 +974,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
     elif fst == 'bearish':
         add(-1, 'FIIs hold a bearish index option combination (long puts, short calls)')
 
-    spot = n_sum['Spot'] if n_sum else (ctx_n['price'] if ctx_n else None)
+    spot = (n_sum['Spot'] if n_sum and n_sum['Spot'] else None) or (ctx_n['price'] if ctx_n else None)
     if n_sum:
         pcr = n_sum['PCR today']
         if pcr >= 1.1:
@@ -783,7 +1018,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
     blocks = []
 
     # ---------- 1. overall read
-    p = ['Overall read: the evidence on this page adds up to a ' + bias + ' lean (score ' + format(score, '+.1f') + '; +4 or more reads as bullish, -4 or less as bearish, and between about -1.5 and +1.5 as neutral). The score is a tally of the signals below, each weighted by how much it usually matters (foreign flows and FII index positioning carry the most weight), so read it as a summary of the evidence and not as a forecast.']
+    p = ['Taken together, the evidence on this page adds up to a ' + bias + ' lean (score ' + format(score, '+.1f') + '; +4 or more reads as bullish, -4 or less as bearish, and between about -1.5 and +1.5 as neutral). The score is a tally of the signals discussed here, each weighted by how much it usually matters (foreign flows and FII index positioning carry the most weight), so read it as a summary of the evidence and not as a forecast.']
     if bull:
         p.append('Supportive factors: ' + '; '.join(bull) + '.')
     if bear:
@@ -795,7 +1030,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
     # ---------- 2. flows and positioning
     p = []
     if fii is not None or dii is not None:
-        t = 'Flows: '
+        t = 'On flows, '
         if fii is not None:
             t += 'foreign institutions were net ' + ('buyers' if fii > 0 else 'sellers') + ' of Rs ' + n(abs(fii)) + ' crore in cash'
         if dii is not None:
@@ -803,7 +1038,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
         t += '. Cash flows show actual investing; derivatives show how institutions are hedging and speculating around it. The two together tell whether the move has real money behind it.'
         p.append(t)
     if f and sl is not None:
-        t = 'Positioning: FIIs hold a ' + format(sl, '.0f') + '% long share in index futures. '
+        t = 'On positioning, FIIs hold a ' + format(sl, '.0f') + '% long share in index futures. '
         if sl <= 45:
             t += 'They are net short, so the market is vulnerable to further selling if bad news arrives, but a short base this large also leaves room for a sharp short-covering rally if sentiment improves. '
         elif sl >= 55:
@@ -815,7 +1050,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
             t += 'Retail clients are on the opposite side of FIIs, which historically has favoured the institutional side at turning points.'
         p.append(t)
     if fst:
-        p.append('Index options: FIIs are ' + STANCE_TEXT.get(fst, '') + '.')
+        p.append('In index options, FIIs are ' + STANCE_TEXT.get(fst, '') + '.')
     if p:
         blocks.append(('Flows and positioning', p))
 
@@ -825,13 +1060,15 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
     p = []
     if n_sum and spot:
         pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
-        t = 'Expiry map for the ' + str(exp_str) + ' Nifty expiry: spot ' + format(spot, ',.2f') + ', largest put wall ' + n(pw) + ', largest call wall ' + n(cw) + ', max pain ' + n(mp) + ', PCR ' + str(n_sum['PCR today']) + '. '
+        t = 'Turning to the ' + str(exp_str) + ' Nifty expiry, the option map shows spot at ' + indian(spot, 2) + ', the largest put wall at ' + n(pw) + ', the largest call wall at ' + n(cw) + ', max pain at ' + n(mp) + ' and a PCR of ' + str(n_sum['PCR today']) + '. '
+        if n_label and 'Last trading' in str(n_label):
+            t += 'These option figures come from the ' + str(n_label) + ' because the live chain was not available, so they reflect the last close. '
         if exp_date is not None:
-            t += 'Expiry falls on ' + exp_date.strftime('%A, %d %B %Y') + ((' (' + str(dte) + ' calendar day' + ('' if dte == 1 else 's') + ' away)') if dte else ' (today)') + '. Because NSE shifts an expiry back to the previous trading day when the Tuesday falls on a holiday, this date comes straight from the live option chain. '
+            t += 'Expiry falls on ' + exp_date.strftime('%A, %d %B %Y') + ((' (' + str(dte) + ' calendar day' + ('' if dte == 1 else 's') + ' away)') if dte else ' (today)') + '. Because NSE shifts an expiry back to the previous trading day when the Tuesday falls on a holiday, this date comes straight from the option chain data. '
         t += 'The walls mark where option writers have the most at stake, and writers defend those strikes by hedging, which is why price tends to stay between them unless a strong trigger arrives. Near expiry, time decay accelerates and small moves in the index create large percentage swings in option premiums (high gamma), so the final sessions are more volatile in premium terms than the index itself.'
         p.append(t)
         if s_sum:
-            p.append('Sensex open interest: PCR ' + str(s_sum['PCR today']) + ', largest put wall ' + n(s_sum['Highest Put OI strike (support)']) + ', largest call wall ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '. A similar PCR to Nifty means both indices are telling the same story; a divergence would suggest the heavyweights common to both are driving one more than the other.')
+            p.append('Sensex open interest shows a PCR of ' + str(s_sum['PCR today']) + ', largest put wall ' + n(s_sum['Highest Put OI strike (support)']) + ', largest call wall ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '. A similar PCR to Nifty means both indices are telling the same story; a divergence would suggest the heavyweights common to both are driving one more than the other.')
     if p:
         blocks.append(('Open interest and the expiry map', p))
 
@@ -857,7 +1094,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
     if vix_last is not None:
         mac.append('India VIX is at ' + format(vix_last, '.1f'))
     if mac:
-        p.append('Macro backdrop: ' + ', '.join(mac) + '. A firmer dollar and higher crude are the two global factors that most often hurt Indian equities (through foreign selling, rupee weakness and inflation), while a softer dollar and lower crude help.')
+        p.append('On the macro side, ' + ', '.join(mac) + '. A firmer dollar and higher crude are the two global factors that most often hurt Indian equities (through foreign selling, rupee weakness and inflation), while a softer dollar and lower crude help.')
     if p:
         blocks.append(('Trend and macro backdrop', p))
 
@@ -879,13 +1116,13 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
         tilt = sd * max(-0.5, min(0.5, score / 8.0))
         center = 0.75 * (spot + tilt) + 0.25 * mp
         lo, hi = center - 0.6 * sd, center + 0.6 * sd
-        p.append('Method: the expected move to expiry is spot times volatility times the square root of time. Using ' + method + ', the one-standard-deviation range is about ' + n(spot - sd) + ' to ' + n(spot + sd) + ' (a move of roughly ' + n(sd) + ' points), and about two-thirds of outcomes should fall inside it if the options market has priced volatility correctly. The option walls give a second view: ' + n(pw) + ' to ' + n(cw) + '.')
-        p.append('My base case: Nifty is most likely to spend the run to expiry and settle between about ' + n(lo) + ' and ' + n(hi) + ', centred near ' + n(center) + ', with a ' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt. The centre blends the current spot with a small tilt for the ' + bias + ' score and a quarter weighting toward max pain at ' + n(mp) + ', which is how the pull of the writers shows up in the estimate. It is a probabilistic zone, not a promise, and I cannot know the news that will arrive before expiry.')
+        p.append('To size the expected move, I use spot times volatility times the square root of time. Using ' + method + ', the one-standard-deviation range is about ' + n(spot - sd) + ' to ' + n(spot + sd) + ' (a move of roughly ' + n(sd) + ' points), and about two-thirds of outcomes should fall inside it if the options market has priced volatility correctly. The option walls give a second view: ' + n(pw) + ' to ' + n(cw) + '.')
+        p.append('My base case is that Nifty is most likely to spend the run to expiry and settle between about ' + n(lo) + ' and ' + n(hi) + ', centred near ' + n(center) + ', with a ' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt. The centre blends the current spot with a small tilt for the ' + bias + ' score and a quarter weighting toward max pain at ' + n(mp) + ', which is how the pull of the writers shows up in the estimate. It is a probabilistic zone, not a promise, and I cannot know the news that will arrive before expiry.')
         bull_target = max(spot + 1.25 * sd, cw + 0.5 * sd)
         bear_target = min(spot - 1.25 * sd, pw - 0.5 * sd)
         p.append('Bullish scenario: a close above the call wall at ' + n(cw) + ', backed by FII cash buying and a falling VIX, would mean the writers defending that strike are wrong-footed and must hedge by buying. That can carry price toward ' + n(bull_target) + ' by expiry. Bearish scenario: a close below the put wall at ' + n(pw) + ', especially with FII selling and rising VIX, would force put writers to hedge by selling and could extend the fall toward ' + n(bear_target) + '. The moving averages give additional reference points: 20-day SMA ' + n(ctx_n['sma20']) + ', 50-day SMA ' + n(ctx_n['sma50']) + ', 200-day SMA ' + n(ctx_n['sma200']) + '.')
     else:
-        p.append('The expected-move estimate needs both the option chain and price history, and one of them could not be fetched this morning, so no expiry range is shown today.')
+        p.append('The expected-move estimate needs both the option chain (live or from the last trading session) and price history, and one of them was not available this morning, so no expiry range is shown today.')
     blocks.append(('Where Nifty could go by the next expiry', p))
 
     # ---------- 6. Sensex
@@ -905,7 +1142,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
         sp = rnd(min(pw, spot - 0.8 * sd))
         sc = rnd(max(cw, spot + 0.8 * sd))
         atm = rnd(spot)
-        p.append('How I would approach this expiry if I were trading it. The data gives a ' + bias + ' lean, an expected range and defined walls, which favours defined-risk structures over naked positions, because I cannot rule out a gap on news. Everything below is an illustration derived mechanically from the open interest walls and the implied range; it ignores live premiums, margin, liquidity and your risk limits, so treat it as a template to test, not an instruction.')
+        p.append('If I were trading this expiry, I would approach it as follows. The data gives a ' + bias + ' lean, an expected range and defined walls, which favours defined-risk structures over naked positions, because I cannot rule out a gap on news. The structures described here are illustrations derived mechanically from the open interest walls and the implied range; it ignores live premiums, margin, liquidity and your risk limits, so treat it as a template to test, not an instruction.')
         if lean == 'flat':
             p.append('Primary idea, range-bound lean: an iron condor. Sell the ' + n(sp) + ' put and the ' + n(sc) + ' call (outside both the OI walls and roughly 0.8 of the implied move) and buy the ' + n(sp - w) + ' put and ' + n(sc + w) + ' call as protection. The structure profits if Nifty stays between ' + n(sp) + ' and ' + n(sc) + ' and decay erodes the premium; the maximum loss is capped at the wing width (' + n(w) + ' points) minus the credit.')
         elif lean == 'up':
@@ -915,14 +1152,17 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra):
         p.append('Risk management: (1) Size so that the maximum loss on the whole structure is a small fixed share of capital, commonly one to two percent. (2) Check the credit: if a spread pays less than about a third of its width, the reward does not compensate the risk, and it is better to skip. (3) Define exits before entry: if Nifty closes beyond the short strike, or beyond the matching OI wall, close the position rather than adjusting repeatedly. (4) Respect time: gamma rises sharply in the last session, so reduce or close short-option structures before the final afternoon instead of holding to settlement. (5) Avoid naked short options around events; the walls only hold while writers are comfortable, and a gap through them is when losses are largest.')
         p.append('Things that would make me stand aside: a very low premium environment (India VIX under about 12, where selling premium pays little), a major scheduled event before expiry, or a one-sided flow day that breaks the range before the trade is even placed.')
     else:
-        p.append('A trading framework needs the option chain and volatility data, and they could not be fetched this morning, so no structures are shown today.')
+        p.append('A trading framework needs the option chain (live or from the last trading session) and volatility data, and they were not available this morning, so no structures are shown today.')
     blocks.append(('Ideal trading approach for the next expiry', p))
 
     # ---------- 8. what changes it + disclaimer
-    p = ['What would change this view: a sharp reversal in FII cash flows or FII index futures positioning, a jump in India VIX of more than about 10 percent, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average. The dashboard rebuilds every morning, so reassess with the fresh numbers each day instead of holding a view fixed.',
+    p = ['What would change this view is a sharp reversal in FII cash flows or FII index futures positioning, a jump in India VIX of more than about 10 percent, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average. The dashboard rebuilds every morning, so reassess with the fresh numbers each day instead of holding a view fixed.',
          'Important: this is an analytical read of public data, produced by software that follows fixed rules. It is not a prediction or a recommendation, and I am not a licensed investment advisor. Markets can and do move outside any range. Please test any idea on paper first and take your own decisions with your own risk limits.']
     blocks.append(('What would change this, and a note on limits', p))
-    return blocks
+    flat = []
+    for _, paras in blocks:
+        flat.extend(paras)
+    return flat
 
 
 CSS = ('body{font-family:Segoe UI,Arial;background:#0f172a;color:#e2e8f0;margin:0;padding:16px;max-width:1100px;margin:auto}'
@@ -937,20 +1177,28 @@ CSS = ('body{font-family:Segoe UI,Arial;background:#0f172a;color:#e2e8f0;margin:
        '.card{background:#1e293b;border-radius:10px;padding:12px;font-size:14px}'
        '.analysis{background:#13233f;border-left:4px solid #f59e0b;border-radius:6px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#fbbf24}.analysis p{margin:8px 0;line-height:1.6}'
-       '.na{color:#f59e0b}')
+       '.na{color:#f59e0b}.src{font-size:13px;color:#94a3b8;margin:4px 0}')
 
 
 def main():
     now = dt.datetime.now(IST).strftime('%d %b %Y, %H:%M IST')
     cash = safe(fii_dii_cash)
-    files = safe(last_two_files)
+    files = safe(last_files, 3)
     pdata = safe(participant_data, files) if files else None
-    n_df, n_spot = safe(option_chain_nse, 'NIFTY') or (None, None)
-    s_df, s_spot = safe(option_chain_sensex) or (None, None)
     hist = {name: safe(get_history, sym) for name, sym in INDICES}
     ctx = {name: safe(market_context, hist[name]) for name, _ in INDICES}
     ctx_n, ctx_s = ctx['Nifty 50'], ctx['Sensex']
     extra = safe(extra_table)
+
+    # option chains: live first, then the last trading session's end-of-day file
+    n_df, n_spot, n_label = safe(option_chain_nse, 'NIFTY') or (None, None, None)
+    if n_df is None:
+        n_df, n_spot, n_label = safe(bhavcopy_chain, 'NIFTY', 'NSE') or (None, None, None)
+    s_df, s_spot, s_label = safe(option_chain_sensex) or (None, None, None)
+    if s_df is None:
+        s_df, s_spot, s_label = safe(bhavcopy_chain, 'SENSEX', 'BSE') or (None, None, None)
+    if n_df is not None and not n_spot and ctx_n:
+        n_spot = ctx_n['price']
 
     n_sum = n_near = s_sum = None
     try:
@@ -973,27 +1221,43 @@ def main():
 
     page += tag('h2', 'FII and DII cash market flows') + table_html(cash, ('Net (Rs cr)',)) + note(safe(cash_analysis, cash) or [])
 
-    if files:
+    if files and pdata:
         title = 'Derivatives positions by participant (' + files[0][0] + (', compared with ' + files[1][0] if len(files) > 1 else '') + ')'
         page += tag('h2', title)
-        ptable = safe(participant_table, pdata)
-        page += table_html(ptable, ('Net (today)', 'Net (prev day)', 'Change in net'))
-        page += note(safe(participant_analysis, pdata) or [])
+        page += tag('p', 'Colours show the effect on the market: green is bullish and red is bearish. Put options are reversed, because buying puts is bearish and selling puts is bullish. Numbers are contracts, in Indian digit grouping.', 'src')
+        summ = safe(participant_summary_table, pdata)
+        if summ:
+            page += tag('h3', 'Net contracts bought (+) or sold (-) today, all segments') + summ
+        for seg, _, _ in GROUPS:
+            t = safe(participant_segment_table, pdata, seg, files)
+            if t:
+                page += tag('h3', seg) + t
+        page += note(safe(participant_analysis, pdata, files) or [])
     else:
         page += tag('h2', 'Derivatives positions by participant') + tag('p', 'NSE participant file could not be fetched.', 'na')
 
     exp = n_sum['Nearest expiry'] if n_sum else 'unavailable'
     page += tag('h2', 'Open interest: Nifty 50 vs Sensex (nearest expiry ' + str(exp) + ')')
     if n_sum:
+        srcs = 'Data source. Nifty: ' + str(n_label) + '.'
+        if s_sum:
+            srcs += ' Sensex: ' + str(s_label) + '.'
+        page += tag('p', srcs, 'src')
+        if 'Last trading' in str(n_label) or 'Last trading' in str(s_label):
+            page += tag('p', 'The live option chain was not available, so the figures marked as last trading session are the closing open interest of that day.', 'na')
         page += table_html(oi_compare(n_sum, s_sum))
         if s_sum is None:
-            page += tag('p', 'Sensex option data could not be fetched from BSE this morning.', 'na')
+            page += tag('p', 'Sensex option data could not be fetched from BSE, either live or from the last trading session.', 'na')
         page += note((safe(oi_analysis, 'Nifty', n_sum, ctx_n['chg_pct'] if ctx_n else None) or []) +
                      (safe(oi_analysis, 'Sensex', s_sum, ctx_s['chg_pct'] if ctx_s else None) or []))
-        around = n_near[(n_near['Strike'] > n_spot - 500) & (n_near['Strike'] < n_spot + 500)][['Strike', 'Call OI', 'Call Chg OI', 'Put OI', 'Put Chg OI']]
-        page += tag('h3', 'Nifty strike-wise open interest near spot') + table_html(around, ('Call Chg OI', 'Put Chg OI'))
+        try:
+            ref = float(n_spot) if n_spot else float(n_near['Strike'].median())
+            around = n_near[(n_near['Strike'] > ref - 500) & (n_near['Strike'] < ref + 500)][['Strike', 'Call OI', 'Call Chg OI', 'Put OI', 'Put Chg OI']]
+            page += tag('h3', 'Nifty strike-wise open interest near spot') + table_html(around, ('Call Chg OI', 'Put Chg OI'))
+        except Exception:
+            pass
     else:
-        page += tag('p', 'NSE option chain could not be fetched this morning.', 'na')
+        page += tag('p', 'NSE option chain could not be fetched, either live or from the last trading session.', 'na')
 
     page += tag('h2', 'Moving averages (SMA and EMA)')
     for name, _ in INDICES:
@@ -1003,10 +1267,9 @@ def main():
     page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + note(safe(extra_analysis, extra) or [])
 
     page += tag('h2', 'Overall conclusion and next-expiry view')
-    res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra)
+    res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label)
     if res:
-        for title, paras in res:
-            page += note(paras, title)
+        page += note(res, 'Conclusion')
     else:
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 

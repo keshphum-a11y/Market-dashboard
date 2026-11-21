@@ -1,8 +1,11 @@
+import calendar
+import collections
 import datetime as dt
 import io
 import math
 import time
 from io import StringIO
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -786,6 +789,275 @@ def extra_analysis(df):
     return out
 
 
+# ================= EVENT CALENDAR (next 7 days) =================
+FEED_COUNTRY = {'USD': 'US', 'EUR': 'Eurozone', 'GBP': 'UK', 'JPY': 'Japan', 'CNY': 'China'}
+KNOWN_HOLIDAYS = {dt.date(2026, 11, 24): 'Guru Nanak Jayanti', dt.date(2026, 12, 25): 'Christmas'}
+FOMC_DECISIONS = [dt.date(2026, 12, 9)]      # last day of each meeting, US date (federalreserve.gov)
+FOMC_MINUTES = [dt.date(2026, 12, 30)]
+RBI_DECISIONS = [dt.date(2026, 12, 4), dt.date(2027, 2, 5)]   # RBI MPC calendar FY27
+HEAVY = {'RELIANCE', 'HDFCBANK', 'ICICIBANK', 'INFY', 'TCS', 'BHARTIARTL', 'ITC', 'LT', 'SBIN', 'AXISBANK',
+         'KOTAKBANK', 'HINDUNILVR', 'BAJFINANCE', 'MARUTI', 'M&M', 'SUNPHARMA', 'TATAMOTORS', 'NTPC',
+         'ONGC', 'ULTRACEMCO', 'HCLTECH', 'WIPRO', 'TITAN', 'ASIANPAINT', 'POWERGRID', 'TATASTEEL', 'COALINDIA'}
+
+WHY = [
+    (('cpi', 'inflation', 'pce', 'ppi', 'wpi'), 'Inflation print; shapes rate-cut expectations, the dollar and FII flows.'),
+    (('non-farm', 'employment change', 'unemployment rate', 'adp'), 'US jobs strength sets the Fed path; strong data lifts dollar and yields, a headwind for India.'),
+    (('fomc', 'federal funds', 'rate statement', 'interest rate', 'rate decision', 'repo'), 'Rate decision; the biggest driver of liquidity, currencies and FII flows.'),
+    (('gdp',), 'Growth read; moves bond yields and risk appetite.'),
+    (('pmi', 'ism'), 'Business-activity gauge; an early read on growth.'),
+    (('retail sales', 'consumer', 'confidence', 'sentiment'), 'Demand gauge; feeds growth and rate expectations.'),
+    (('jobless', 'claims'), 'Weekly labour signal; feeds Fed expectations.'),
+    (('crude', 'oil'), 'Oil supply signal; India imports most of its crude, so it affects the rupee and inflation.'),
+    (('speaks', 'testifies', 'press conference', 'minutes'), 'Central-bank guidance; tone can move yields and the dollar.'),
+    (('trade balance', 'exports', 'imports'), 'Trade and current-account signal; affects the rupee.'),
+    (('iip', 'industrial production', 'core sector'), 'Factory-output signal; a read on growth.'),
+    (('gst', 'auto sales', 'fiscal'), 'Demand and government-finance signal.'),
+]
+
+
+def why_text(name, imp):
+    low = name.lower()
+    for keys, txt in WHY:
+        if any(k in low for k in keys):
+            return txt
+    return 'Can move global risk appetite.' if imp == 'High' else 'Secondary data point.'
+
+
+def ev(day, time_txt, region, name, imp, why=None, fp=''):
+    return {'date': day, 'time': time_txt, 'region': region, 'event': name, 'imp': imp,
+            'fp': fp, 'why': why or why_text(name, imp)}
+
+
+def nse_holidays():
+    out = dict(KNOWN_HOLIDAYS)
+    data = nse_get('https://www.nseindia.com/api/holiday-master?type=trading')
+    try:
+        for r in (data or {}).get('FO', []):
+            d = dt.datetime.strptime(r['tradingDate'], '%d-%b-%Y').date()
+            out[d] = r.get('description', 'Market holiday')
+    except Exception:
+        pass
+    return out
+
+
+def is_trading_day(d, hol):
+    return d.weekday() < 5 and d not in hol
+
+
+def shift_back(d, hol):
+    while not is_trading_day(d, hol):
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def shift_fwd(d):
+    while d.weekday() >= 5:
+        d += dt.timedelta(days=1)
+    return d
+
+
+def last_weekday_of_month(y, m):
+    d = dt.date(y, m, calendar.monthrange(y, m)[1])
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def nth_working_day(y, m, k):
+    d, c = dt.date(y, m, 1), 0
+    while True:
+        if d.weekday() < 5:
+            c += 1
+            if c == k:
+                return d
+        d += dt.timedelta(days=1)
+
+
+def expiry_events(start, end, hol):
+    out = []
+    for k in range(-7, (end - start).days + 8):
+        day = start + dt.timedelta(days=k)
+        for wd, name in ((1, 'Nifty'), (3, 'Sensex')):
+            if day.weekday() != wd:
+                continue
+            exp = shift_back(day, hol)
+            if not (start <= exp <= end):
+                continue
+            monthly = (day + dt.timedelta(days=7)).month != day.month
+            label = name + (' monthly + weekly expiry' if monthly else ' weekly expiry')
+            why = ('Expiry day: heavy option hedging, wider intraday swings and strong pull toward max pain.' if monthly
+                   else 'Expiry day: option decay peaks and intraday swings widen.')
+            if exp != day:
+                why += ' Moved earlier because ' + day.strftime('%a %d %b') + ' is a market holiday.'
+            out.append(ev(exp, 'All day', 'India', label, 'High' if monthly else 'Medium', why))
+    return out
+
+
+def holiday_events(start, end, hol):
+    out = []
+    for d, desc in hol.items():
+        if start <= d <= end and d.weekday() < 5:
+            out.append(ev(d, 'All day', 'India', 'NSE/BSE closed: ' + str(desc), 'High', 'No trading; expiries and settlements shift around the holiday.'))
+    return out
+
+
+def us_holiday_events(start, end):
+    out = []
+    for y in {start.year, end.year}:
+        nov = [dt.date(y, 11, d) for d in range(1, 31) if dt.date(y, 11, d).weekday() == 3]
+        tg = nov[3]
+        out.append((tg, 'US markets closed: Thanksgiving', 'Thin global liquidity; US data and flows pause.'))
+        out.append((tg + dt.timedelta(days=1), 'US markets close early (Black Friday)', 'Thin liquidity into the US close.'))
+        out.append((dt.date(y, 12, 25), 'US markets closed: Christmas', 'Thin global liquidity.'))
+        out.append((dt.date(y, 1, 1), "US markets closed: New Year's Day", 'Thin global liquidity.'))
+    return [ev(d, 'All day', 'US', n_, 'Medium', w) for d, n_, w in out if start <= d <= end]
+
+
+def india_data_events(start, end):
+    out = []
+    months = {(start.year, start.month), (end.year, end.month)}
+    for y, m in months:
+        items = [
+            (shift_fwd(dt.date(y, m, 12)), 'India CPI inflation', 'High'),
+            (shift_fwd(dt.date(y, m, 14)), 'India WPI inflation', 'Medium'),
+            (shift_fwd(dt.date(y, m, 15)), 'India trade data (exports, imports)', 'Medium'),
+            (shift_fwd(dt.date(y, m, 28)), 'India IIP industrial output', 'Medium'),
+            (last_weekday_of_month(y, m), 'India fiscal deficit (CGA data)', 'Low'),
+            (nth_working_day(y, m, 1), 'India manufacturing PMI', 'Medium'),
+            (nth_working_day(y, m, 1), 'India GST collections and auto sales', 'Low'),
+            (nth_working_day(y, m, 3), 'India services PMI', 'Medium'),
+        ]
+        if m in (2, 5, 8, 11):
+            items.append((last_weekday_of_month(y, m), 'India GDP (quarterly)', 'High'))
+        for d, name, imp in items:
+            if start <= d <= end:
+                out.append(ev(d, '17:00' if 'GDP' in name or 'CPI' in name or 'WPI' in name or 'IIP' in name else 'Varies', 'India', name + ' (usual date, confirm)', imp))
+    return out
+
+
+def central_bank_events(start, end):
+    out = []
+    try:
+        ny = ZoneInfo('America/New_York')
+    except Exception:
+        ny = dt.timezone(dt.timedelta(hours=-5))
+    for d in FOMC_DECISIONS:
+        t = dt.datetime(d.year, d.month, d.day, 14, 0, tzinfo=ny).astimezone(IST)
+        if start <= t.date() <= end:
+            out.append(ev(t.date(), t.strftime('%H:%M'), 'US', 'US Fed FOMC rate decision and projections', 'High'))
+    for d in FOMC_MINUTES:
+        t = dt.datetime(d.year, d.month, d.day, 14, 0, tzinfo=ny).astimezone(IST)
+        if start <= t.date() <= end:
+            out.append(ev(t.date(), t.strftime('%H:%M'), 'US', 'FOMC meeting minutes', 'Medium'))
+    for d in RBI_DECISIONS:
+        if start <= d <= end:
+            out.append(ev(d, '10:00', 'India', 'RBI monetary policy decision', 'High'))
+        if start <= d - dt.timedelta(days=2) <= end:
+            out.append(ev(d - dt.timedelta(days=2), 'All day', 'India', 'RBI MPC meeting begins', 'Medium', 'Policy meeting starts; the decision comes on the last day.'))
+    return out
+
+
+def global_feed(start, end):
+    out = []
+    for fn in ('thisweek', 'nextweek'):
+        try:
+            r = requests.get('https://nfs.faireconomy.media/ff_calendar_' + fn + '.json', headers=HEADERS, timeout=20)
+            if r.status_code != 200:
+                continue
+            for e in r.json():
+                c = FEED_COUNTRY.get(e.get('country'))
+                imp = e.get('impact')
+                if not c or not (imp == 'High' or imp == 'Holiday' or (imp == 'Medium' and c in ('US', 'China'))):
+                    continue
+                t = dt.datetime.fromisoformat(e['date']).astimezone(IST)
+                if not (start <= t.date() <= end):
+                    continue
+                fp = ''
+                if e.get('forecast') or e.get('previous'):
+                    fp = 'F: ' + str(e.get('forecast') or '-') + ' / P: ' + str(e.get('previous') or '-')
+                if imp == 'Holiday':
+                    out.append(ev(t.date(), 'All day', c, str(e.get('title')), 'Medium', 'Market holiday; thinner global liquidity.'))
+                else:
+                    out.append(ev(t.date(), t.strftime('%H:%M'), c, str(e.get('title')), imp, None, fp))
+        except Exception:
+            continue
+    return out
+
+
+def corporate_events(start, end):
+    out = []
+    data = nse_get('https://www.nseindia.com/api/event-calendar')
+    for r in data or []:
+        try:
+            sym = str(r.get('symbol', '')).upper()
+            purpose = (str(r.get('purpose', '')) + ' ' + str(r.get('bm_desc', ''))).lower()
+            if sym not in HEAVY or 'result' not in purpose:
+                continue
+            d = dt.datetime.strptime(str(r['date']), '%d-%b-%Y').date()
+            if start <= d <= end:
+                out.append(ev(d, 'Varies', 'India', sym + ' quarterly results', 'Medium', 'Heavyweight earnings can move the index and its sector.'))
+        except Exception:
+            continue
+    return out
+
+
+def build_events():
+    start = dt.datetime.now(IST).date()
+    end = start + dt.timedelta(days=6)
+    hol = nse_holidays()
+    rows = []
+    for fn in (lambda: expiry_events(start, end, hol), lambda: holiday_events(start, end, hol),
+               lambda: us_holiday_events(start, end), lambda: india_data_events(start, end),
+               lambda: central_bank_events(start, end), lambda: global_feed(start, end),
+               lambda: corporate_events(start, end)):
+        got = safe(fn)
+        if got:
+            rows.extend(got)
+    seen, uniq = set(), []
+    for e in rows:
+        k = (e['date'], e['event'])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(e)
+    order = {'High': 0, 'Medium': 1, 'Low': 2}
+    uniq.sort(key=lambda e: (e['date'], '00:00' if e['time'] in ('All day', 'Varies') else e['time'], order.get(e['imp'], 3)))
+    return {'start': start, 'end': end, 'events': uniq}
+
+
+def events_table(evs):
+    rows = []
+    for e in evs['events']:
+        rows.append([(e['date'].strftime('%a %d %b'), ''), (e['time'], ''), (e['region'], ''), (e['event'], ''),
+                     (e['imp'], 'hi' if e['imp'] == 'High' else ''), (e['fp'], ''), (e['why'], '')])
+    if not rows:
+        return tag('p', 'No major events found for the next 7 days.', 'na')
+    return tag('div', tag('table', tag('tr', ''.join(tag('th', h) for h in ['Date (IST)', 'Time (IST)', 'Region', 'Event', 'Importance', 'Forecast / previous', 'Why it matters'])) +
+                          ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows), 'evt'), 'scroll')
+
+
+def events_analysis(evs):
+    out = []
+    items = evs['events']
+    high = [e for e in items if e['imp'] == 'High']
+    if high:
+        out.append('High-importance: ' + '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in high[:6]) + '.')
+    exp = [e for e in items if 'expiry' in e['event']]
+    if exp:
+        out.append('Derivatives expiry: ' + '; '.join(e['event'] + ' on ' + e['date'].strftime('%a %d %b') for e in exp) + '. Expect wider intraday swings and strikes acting as magnets.')
+    hol = [e for e in items if 'closed' in e['event'].lower() and e['region'] == 'India']
+    if hol:
+        out.append('Indian market holiday: ' + '; '.join(e['event'].replace('NSE/BSE closed: ', '') + ' on ' + e['date'].strftime('%a %d %b') for e in hol) + '. Expiries move to the previous trading day.')
+    ush = [e for e in items if e['region'] == 'US' and 'closed' in e['event'].lower()]
+    if ush:
+        out.append('US market holiday: ' + '; '.join(e['event'].replace('US markets closed: ', '') + ' on ' + e['date'].strftime('%a %d %b') for e in ush) + '. Global liquidity is thinner, so moves can be erratic.')
+    cnt = collections.Counter(e['date'] for e in high)
+    if cnt:
+        d, c = cnt.most_common(1)[0]
+        out.append('Busiest day: ' + d.strftime('%a %d %b') + ' with ' + str(c) + ' high-importance event' + ('s' if c > 1 else '') + '.')
+    out.append('How to use: markets react to the surprise versus forecast, not the number itself. US data lands after the Indian close, so it shows up at the next open.')
+    return out
+
+
 # ================= OVERALL CONCLUSION =================
 def days_to_expiry(exp):
     try:
@@ -796,7 +1068,7 @@ def days_to_expiry(exp):
         return None, None
 
 
-def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
+def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, events=None):
     bull, bear = [], []
     st = {'score': 0.0}
 
@@ -969,6 +1241,10 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     else:
         rows.append(('Nifty range and strategy', 'Not available: option chain (live or last session) or price history could not be fetched.'))
 
+    if events and events.get('events'):
+        hi = [e for e in events['events'] if e['imp'] == 'High'][:5]
+        if hi:
+            rows.append(('Events to watch', '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in hi) + '.'))
     rows.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
     rows.append(('Note', 'Rule-based reading of public data, not a prediction or investment advice. Test ideas on paper first.'))
     return rows, bias, score, quick_range, quick_idea
@@ -987,7 +1263,8 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
        '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}'
-       '.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
+       '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(4){min-width:200px}.evt td:nth-child(7){min-width:240px}'
+       '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
 def main():
@@ -1070,8 +1347,16 @@ def main():
 
     page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + note(safe(extra_analysis, extra) or [])
 
+    evs = safe(build_events)
+    if evs:
+        page += tag('h2', 'Event calendar: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
+        page += tag('p', 'Times are IST. Global rows come from a public economic calendar; RBI and Fed dates are from their official schedules; India data dates follow the usual release pattern, so confirm exact timings before trading.', 'src')
+        page += events_table(evs) + note(safe(events_analysis, evs) or [])
+    else:
+        page += tag('h2', 'Event calendar: next 7 days') + tag('p', 'Event calendar could not be built this morning.', 'na')
+
     page += tag('h2', 'Overall conclusion and next-expiry view')
-    res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label)
+    res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label, evs)
     if res:
         rows = res[0]
         head = tag('tr', tag('th', 'Heading') + tag('th', 'Conclusion'))

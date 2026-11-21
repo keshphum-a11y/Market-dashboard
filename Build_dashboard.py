@@ -873,163 +873,105 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     else:
         bias, lean = 'bearish', 'down'
 
-    blocks = []
-
-    # ---------- 1. overall read
-    p = ['Taken together, the evidence on this page adds up to a ' + bias + ' lean (score ' + format(score, '+.1f') + '; +4 or more reads as bullish, -4 or less as bearish, and between about -1.5 and +1.5 as neutral). The score is a tally of the signals discussed here, each weighted by how much it usually matters (foreign flows and FII index positioning carry the most weight), so read it as a summary of the evidence and not as a forecast.']
-    if bull:
-        p.append('Supportive factors: ' + '; '.join(bull) + '.')
-    if bear:
-        p.append('Cautionary factors: ' + '; '.join(bear) + '.')
-    if bull and bear:
-        p.append('The evidence is mixed, which usually means a transition or a range, so lean on the levels (walls and averages) more than on direction.')
-    blocks.append(('Overall read', p))
-
-    # ---------- 2. flows and positioning
-    p = []
-    if fii is not None or dii is not None:
-        t = 'On flows, '
-        if fii is not None:
-            t += 'foreign institutions were net ' + ('buyers' if fii > 0 else 'sellers') + ' of Rs ' + n(abs(fii)) + ' crore in cash'
-        if dii is not None:
-            t += (' while domestic institutions were net ' + ('buyers' if dii > 0 else 'sellers') + ' of Rs ' + n(abs(dii)) + ' crore') if fii is not None else 'domestic institutions were net ' + ('buyers' if dii > 0 else 'sellers') + ' of Rs ' + n(abs(dii)) + ' crore'
-        t += '.'
-        p.append(t)
-    if f and sl is not None:
-        t = 'On positioning, FIIs hold a ' + format(sl, '.0f') + '% long share in index futures. '
-        if sl <= 45:
-            t += 'They are net short, so the market is vulnerable to further selling if bad news arrives, but a short base this large also leaves room for a sharp short-covering rally if sentiment improves. '
-        elif sl >= 55:
-            t += 'They are net long, which supports dips, though it leaves less room for new foreign buying to push the market higher. '
-        else:
-            t += 'This is close to balanced, so FIIs are not leaning heavily either way. '
-        ci = pdata.get(('Index Futures', 'Client'))
-        if ci and f['net'] * ci['net'] < 0:
-            t += 'Retail clients are on the opposite side of FIIs, which historically has favoured the institutional side at turning points.'
-        p.append(t)
-    if fst:
-        p.append('In index options, FIIs are ' + STANCE_TEXT.get(fst, '') + '.')
-    if p:
-        blocks.append(('Flows and positioning', p))
-
-    # ---------- 3. open interest and expiry map
+    rows = []
+    vix_last = extra_value(extra, 'India VIX')
     exp_str = n_sum['Nearest expiry'] if n_sum else None
     dte, exp_date = days_to_expiry(exp_str) if exp_str else (None, None)
-    p = []
+
+    rows.append(('Overall bias', bias.capitalize() + ' (score ' + format(score, '+.1f') + '; +4 or more bullish, -4 or less bearish, in between neutral to mild).'))
+    rows.append(('Supportive factors', '; '.join(bull) + '.' if bull else 'None.'))
+    rows.append(('Cautionary factors', '; '.join(bear) + '.' if bear else 'None.'))
+
+    if fii is not None or dii is not None:
+        t = []
+        if fii is not None:
+            t.append('FIIs net ' + ('bought' if fii > 0 else 'sold') + ' Rs ' + n(abs(fii)) + ' crore')
+        if dii is not None:
+            t.append('DIIs net ' + ('bought' if dii > 0 else 'sold') + ' Rs ' + n(abs(dii)) + ' crore')
+        rows.append(('Cash flows', ', '.join(t) + '.'))
+
+    if f and sl is not None:
+        t = 'FII index futures ' + format(sl, '.0f') + '% long (net ' + sgn(f['net']) + ')'
+        if fst:
+            t += '; FII options ' + STANCE_TEXT.get(fst, '')
+        ci = pdata.get(('Index Futures', 'Client'))
+        if ci:
+            t += '; Clients net ' + sgn(ci['net']) + (', opposite to FIIs' if f['net'] * ci['net'] < 0 else ', same side as FIIs')
+        rows.append(('Derivatives positioning', t + '.'))
+
     if n_sum and spot:
         pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
-        t = 'Turning to the ' + str(exp_str) + ' Nifty expiry, the option map shows spot at ' + indian(spot, 2) + ', the largest put wall at ' + n(pw) + ', the largest call wall at ' + n(cw) + ', max pain at ' + n(mp) + ' and a PCR of ' + str(n_sum['PCR today']) + '. '
-        if n_label and 'Last trading' in str(n_label):
-            t += 'These option figures come from the ' + str(n_label) + ' because the live chain was not available, so they reflect the last close. '
+        t = 'Expiry ' + str(exp_str)
         if exp_date is not None:
-            t += 'Expiry falls on ' + exp_date.strftime('%A, %d %B %Y') + ((' (' + str(dte) + ' calendar day' + ('' if dte == 1 else 's') + ' away)') if dte else ' (today)') + '. Because NSE shifts an expiry back to the previous trading day when the Tuesday falls on a holiday, this date comes straight from the option chain data. '
-        t += 'Writers defend the walls by hedging, so price tends to stay between them unless a strong trigger arrives; premiums swing sharply in the last sessions.'
-        p.append(t)
-        if s_sum:
-            p.append('Sensex open interest shows a PCR of ' + str(s_sum['PCR today']) + ', largest put wall ' + n(s_sum['Highest Put OI strike (support)']) + ', largest call wall ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '.')
-    if p:
-        blocks.append(('Open interest and the expiry map', p))
+            t += ' (' + exp_date.strftime('%A') + (', ' + str(dte) + ' day' + ('' if dte == 1 else 's') + ' away' if dte else ', today') + ')'
+        t += '. Spot ' + indian(spot, 2) + ', support (put wall) ' + n(pw) + ', resistance (call wall) ' + n(cw) + ', max pain ' + n(mp) + ', PCR ' + str(n_sum['PCR today']) + '.'
+        if n_label and 'Last trading' in str(n_label):
+            t += ' Data is from the ' + str(n_label) + '.'
+        rows.append(('Nifty expiry map', t))
+    if s_sum:
+        rows.append(('Sensex open interest', 'PCR ' + str(s_sum['PCR today']) + ', support ' + n(s_sum['Highest Put OI strike (support)']) + ', resistance ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '.'))
 
-    # ---------- 4. trend and macro
-    p = []
-    for nm, c in [('Nifty 50', ctx_n), ('Sensex', ctx_s)]:
-        if not c:
-            continue
-        t = nm + ' closed at ' + n(c['price']) + ', ' + format(abs(c['chg_pct']), '.2f') + '% ' + ('up' if c['chg_pct'] >= 0 else 'down') + ' on the day, ' + format(c['ret5'], '+.1f') + '% over five sessions and ' + format(c['ret20'], '+.1f') + '% over twenty. Its 50-day SMA is ' + n(c['sma50']) + ' and its 200-day SMA ' + n(c['sma200']) + '. The 52-week range is ' + n(c['lo52']) + ' to ' + n(c['hi52']) + ', so price is ' + format((1 - c['price'] / c['hi52']) * 100, '.1f') + '% below the high. '
-        if c['price'] > c['sma50'] and c['price'] > c['sma200']:
-            t += 'The primary trend remains up while price holds above the 50-day average; that average is the level trend followers watch.'
-        elif c['price'] > c['sma200']:
-            t += 'Price is below the 50-day average but above the 200-day, so the market is correcting inside a larger uptrend; the 200-day is the key long-term line.'
-        else:
-            t += 'Price is below the 200-day average, a weak long-term structure in which rallies are more likely to be sold.'
-        p.append(t)
+    tr = []
+    for nm, c in [('Nifty', ctx_n), ('Sensex', ctx_s)]:
+        if c:
+            pos = 'above the 50 and 200 day averages (uptrend)' if c['price'] > c['sma50'] and c['price'] > c['sma200'] else ('below the 50-day but above the 200-day (correction inside an uptrend)' if c['price'] > c['sma200'] else 'below the 200-day average (weak structure)')
+            tr.append(nm + ' ' + n(c['price']) + ' (' + format(c['chg_pct'], '+.2f') + '% today, ' + format(c['ret20'], '+.1f') + '% in 20 sessions), ' + pos)
+    if tr:
+        rows.append(('Trend', '; '.join(tr) + '.'))
+
     mac = []
     if dxy is not None:
-        mac.append('the dollar index ' + ('rose' if dxy > 0 else 'fell') + ' ' + format(abs(dxy), '.2f') + '%')
+        mac.append('Dollar index ' + format(dxy, '+.2f') + '% (' + ('headwind' if dxy > 0 else 'tailwind') + ')')
     if brent is not None:
-        mac.append('Brent crude ' + ('rose' if brent > 0 else 'fell') + ' ' + format(abs(brent), '.2f') + '%')
-    vix_last = extra_value(extra, 'India VIX')
+        mac.append('Brent ' + format(brent, '+.2f') + '% (' + ('headwind' if brent > 0 else 'tailwind') + ')')
     if vix_last is not None:
-        mac.append('India VIX is at ' + format(vix_last, '.1f'))
+        mac.append('India VIX ' + format(vix_last, '.1f'))
     if mac:
-        p.append('On the macro side, ' + ', '.join(mac) + '.')
-    if p:
-        blocks.append(('Trend and macro backdrop', p))
+        rows.append(('Macro', ', '.join(mac) + '.'))
 
-    # ---------- 5. where could Nifty go by the next expiry
-    p = []
-    quick_range = quick_idea = ''
     atr = ctx_n['atr'] if ctx_n else None
     sd = None
     method = ''
     if spot:
         if vix_last is not None and 5 < vix_last < 60:
             sd = spot * (vix_last / 100.0) * math.sqrt(max(dte if dte is not None else 1, 1) / 365.0)
-            method = 'India VIX of ' + format(vix_last, '.1f')
+            method = 'India VIX ' + format(vix_last, '.1f')
         elif atr:
             days = max(round((dte if dte is not None else 1) * 5 / 7), 1)
             sd = atr * math.sqrt(days)
-            method = 'the 14-day ATR of ' + n(atr) + ' points'
+            method = '14-day ATR ' + n(atr)
+    quick_range = quick_idea = ''
     if sd and n_sum:
         pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
         tilt = sd * max(-0.5, min(0.5, score / 8.0))
         center = 0.75 * (spot + tilt) + 0.25 * mp
         lo, hi = center - 0.6 * sd, center + 0.6 * sd
-        p.append('To size the expected move, I use spot times volatility times the square root of time. Using ' + method + ', the one-standard-deviation range is about ' + n(spot - sd) + ' to ' + n(spot + sd) + ' (a move of roughly ' + n(sd) + ' points), and about two-thirds of outcomes should fall inside it if the options market has priced volatility correctly. The option walls give a second view: ' + n(pw) + ' to ' + n(cw) + '.')
         quick_range = n(lo) + ' to ' + n(hi)
-        p.append('My base case is that Nifty is most likely to spend the run to expiry and settle between about ' + n(lo) + ' and ' + n(hi) + ', centred near ' + n(center) + ', with a ' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt. The centre blends spot, a small tilt for the ' + bias + ' score and a quarter weighting to max pain at ' + n(mp) + '. It is a probabilistic zone, not a promise.')
-        bull_target = max(spot + 1.25 * sd, cw + 0.5 * sd)
-        bear_target = min(spot - 1.25 * sd, pw - 0.5 * sd)
-        p.append('Bullish scenario: a close above the call wall at ' + n(cw) + ', backed by FII cash buying and a falling VIX, would mean the writers defending that strike are wrong-footed and must hedge by buying. That can carry price toward ' + n(bull_target) + ' by expiry. Bearish scenario: a close below the put wall at ' + n(pw) + ', especially with FII selling and rising VIX, would force put writers to hedge by selling and could extend the fall toward ' + n(bear_target) + '. The moving averages give additional reference points: 20-day SMA ' + n(ctx_n['sma20']) + ', 50-day SMA ' + n(ctx_n['sma50']) + ', 200-day SMA ' + n(ctx_n['sma200']) + '.')
-    else:
-        p.append('The expected-move estimate needs both the option chain (live or from the last trading session) and price history, and one of them was not available this morning, so no expiry range is shown today.')
-    blocks.append(('Where Nifty could go by the next expiry', p))
-
-    # ---------- 6. Sensex
-    p = []
-    if ctx_s:
-        t = 'Sensex is at ' + n(ctx_s['price']) + ' with a daily ATR of about ' + n(ctx_s['atr']) + ' points. Sensex weekly options expire on Thursdays, so its decay and positioning cycle runs a few days after Nifty. Because Sensex is made of 30 of the same heavyweights that dominate Nifty, it usually follows the same direction; the practical difference is that its option market is thinner, so levels from its chain are less reliable than Nifty levels.'
-        p.append(t)
-        if ctx_s['atr']:
-            p.append('A rough one-day Sensex range from volatility is ' + n(ctx_s['price'] - ctx_s['atr']) + ' to ' + n(ctx_s['price'] + ctx_s['atr']) + '. Moves beyond this are larger than normal and deserve attention.')
-        blocks.append(('Sensex view', p))
-
-    # ---------- 7. trading approach
-    p = []
-    if sd and n_sum and spot:
-        pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
+        rows.append(('Nifty range at next expiry', 'Base case ' + n(lo) + ' to ' + n(hi) + ', centred near ' + n(center) + ' (' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt). One-standard-deviation range from ' + method + ': ' + n(spot - sd) + ' to ' + n(spot + sd) + '. Option walls: ' + n(pw) + ' to ' + n(cw) + '.'))
+        rows.append(('Bullish scenario', 'Close above ' + n(cw) + ' with FII buying and falling VIX; target about ' + n(max(spot + 1.25 * sd, cw + 0.5 * sd)) + '.'))
+        rows.append(('Bearish scenario', 'Close below ' + n(pw) + ' with FII selling and rising VIX; target about ' + n(min(spot - 1.25 * sd, pw - 0.5 * sd)) + '.'))
         w = max(100, rnd(sd * 0.5))
         sp = rnd(min(pw, spot - 0.8 * sd))
         sc = rnd(max(cw, spot + 0.8 * sd))
         atm = rnd(spot)
-        p.append('If I were trading this expiry, I would approach it as follows. The data gives a ' + bias + ' lean, an expected range and defined walls, which favours defined-risk structures over naked positions, because I cannot rule out a gap on news. The structures described here are illustrations derived mechanically from the open interest walls and the implied range; it ignores live premiums, margin, liquidity and your risk limits, so treat it as a template to test, not an instruction.')
-        quick_idea = ('iron condor' if lean == 'flat' else ('bull put spread' if lean == 'up' else 'bear call spread'))
         if lean == 'flat':
-            p.append('Primary idea, range-bound lean: an iron condor. Sell the ' + n(sp) + ' put and the ' + n(sc) + ' call (outside both the OI walls and roughly 0.8 of the implied move) and buy the ' + n(sp - w) + ' put and ' + n(sc + w) + ' call as protection. The structure profits if Nifty stays between ' + n(sp) + ' and ' + n(sc) + ' and decay erodes the premium; the maximum loss is capped at the wing width (' + n(w) + ' points) minus the credit.')
+            quick_idea = 'iron condor'
+            st_txt = 'Iron condor: sell ' + n(sp) + ' put and ' + n(sc) + ' call, buy ' + n(sp - w) + ' put and ' + n(sc + w) + ' call. Profits if Nifty stays between ' + n(sp) + ' and ' + n(sc) + '; max loss is wing width (' + n(w) + ' points) minus credit.'
         elif lean == 'up':
-            p.append('Primary idea, ' + bias + ' lean: a bull put spread. Sell the ' + n(sp) + ' put (below the put wall and about 0.8 of the implied move under spot) and buy the ' + n(sp - w) + ' put. This profits if Nifty stays above ' + n(sp) + ' and collects decay, so it can win even if the market goes nowhere. If you prefer to own direction, a bull call spread (buy the ' + n(atm) + ' call, sell the ' + n(max(rnd(cw), atm + w)) + ' call) benefits from a rise toward the call wall with limited cost.')
+            quick_idea = 'bull put spread'
+            st_txt = 'Bull put spread: sell ' + n(sp) + ' put, buy ' + n(sp - w) + ' put. Profits if Nifty stays above ' + n(sp) + '. Directional alternative: bull call spread, buy ' + n(atm) + ' call, sell ' + n(max(rnd(cw), atm + w)) + ' call.'
         else:
-            p.append('Primary idea, ' + bias + ' lean: a bear call spread. Sell the ' + n(sc) + ' call (above the call wall and about 0.8 of the implied move over spot) and buy the ' + n(sc + w) + ' call. This profits if Nifty stays below ' + n(sc) + ' and collects decay. If you prefer to own direction, a bear put spread (buy the ' + n(atm) + ' put, sell the ' + n(min(rnd(pw), atm - w)) + ' put) benefits from a fall toward the put wall with limited cost.')
-        p.append('Risk management: (1) Size so that the maximum loss on the whole structure is a small fixed share of capital, commonly one to two percent. (2) Check the credit: if a spread pays less than about a third of its width, the reward does not compensate the risk, and it is better to skip. (3) Define exits before entry: if Nifty closes beyond the short strike, or beyond the matching OI wall, close the position rather than adjusting repeatedly. (4) Respect time: gamma rises sharply in the last session, so reduce or close short-option structures before the final afternoon instead of holding to settlement. (5) Avoid naked short options around events; the walls only hold while writers are comfortable, and a gap through them is when losses are largest.')
-        p.append('Things that would make me stand aside: a very low premium environment (India VIX under about 12, where selling premium pays little), a major scheduled event before expiry, or a one-sided flow day that breaks the range before the trade is even placed.')
+            quick_idea = 'bear call spread'
+            st_txt = 'Bear call spread: sell ' + n(sc) + ' call, buy ' + n(sc + w) + ' call. Profits if Nifty stays below ' + n(sc) + '. Directional alternative: bear put spread, buy ' + n(atm) + ' put, sell ' + n(min(rnd(pw), atm - w)) + ' put.'
+        rows.append(('Ideal strategy (illustrative)', st_txt + ' Strikes come from the OI walls and implied range; premiums, margin and liquidity are not considered.'))
+        rows.append(('Risk management', 'Cap total loss at 1 to 2% of capital; skip a spread paying under one-third of its width; exit on a close beyond the short strike or the matching wall; close short options before the last afternoon; no naked shorts around events.'))
+        rows.append(('Stand aside if', 'India VIX under about 12, a major scheduled event before expiry, or the range already broken before entry.'))
     else:
-        p.append('A trading framework needs the option chain (live or from the last trading session) and volatility data, and they were not available this morning, so no structures are shown today.')
-    blocks.append(('Ideal trading approach for the next expiry', p))
+        rows.append(('Nifty range and strategy', 'Not available: option chain (live or last session) or price history could not be fetched.'))
 
-    # ---------- 8. what changes it + disclaimer
-    p = ['What would change this view is a sharp reversal in FII cash flows or FII index futures positioning, a jump in India VIX of more than about 10 percent, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average. The dashboard rebuilds every morning, so reassess with the fresh numbers each day instead of holding a view fixed.',
-         'Important: this is an analytical read of public data, produced by software that follows fixed rules. It is not a prediction or a recommendation, and I am not a licensed investment advisor. Markets can and do move outside any range. Please test any idea on paper first and take your own decisions with your own risk limits.']
-    blocks.append(('What would change this, and a note on limits', p))
-    flat = []
-    for _, paras in blocks:
-        flat.extend(paras)
-    quick = 'In one line: ' + bias + ' lean (score ' + format(score, '+.1f') + ')'
-    if quick_range:
-        quick += '; base-case Nifty zone to expiry ' + quick_range
-    if quick_idea:
-        quick += '; illustrative structure: ' + quick_idea
-    quick += '. Details follow.'
-    return [quick] + flat
+    rows.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
+    rows.append(('Note', 'Rule-based reading of public data, not a prediction or investment advice. Test ideas on paper first.'))
+    return rows, bias, score, quick_range, quick_idea
 
 
 CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111111;margin:0;padding:16px;max-width:1100px;margin:auto}'
@@ -1044,6 +986,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.card{background:#f5f5f5;border:1px solid #dddddd;border-radius:8px;padding:12px;font-size:14px}'
        '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
+       '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}'
        '.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
@@ -1130,7 +1073,10 @@ def main():
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label)
     if res:
-        page += note(res, 'Conclusion', False)
+        rows = res[0]
+        head = tag('tr', tag('th', 'Heading') + tag('th', 'Conclusion'))
+        body = ''.join(tag('tr', tag('td', h) + tag('td', t)) for h, t in rows)
+        page += tag('div', tag('table', head + body, 'concl'), 'scroll')
     else:
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 

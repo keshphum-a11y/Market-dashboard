@@ -110,11 +110,15 @@ def table_html(df, colour_cols=()):
     return tag('div', tag('table', head + body), 'scroll')
 
 
-def note(paras, title='Analysis'):
+def note(paras, title='Quick read', bullets=True):
     paras = [p for p in paras if p]
     if not paras:
         return ''
-    return tag('div', tag('b', title) + ''.join(tag('p', p) for p in paras), 'analysis')
+    if bullets:
+        body = tag('ul', ''.join(tag('li', p) for p in paras))
+    else:
+        body = ''.join(tag('p', p) for p in paras)
+    return tag('div', tag('b', title) + body, 'analysis')
 
 
 def rnd(x, step=50):
@@ -173,27 +177,24 @@ def cash_analysis(df):
     fii, dii = cash_split(df)
     out = []
     if fii is not None:
-        if fii < 0:
-            out.append('Foreign flows: FIIs were net sellers of about Rs ' + n(abs(fii)) + ' crore. This matters in three ways. First, FIIs own large stakes in the heavyweights that dominate Nifty and Sensex (private banks, IT, energy), so sustained selling pulls the index down directly. Second, foreign selling usually comes with rupee weakness, because sale proceeds are converted back into dollars; a weaker rupee raises the cost of imported oil and inflation worries, which keeps foreign investors cautious. Third, cash selling tends to be accompanied by hedging in derivatives (index shorts or put buying), which can speed up falls. Heavy-selling days usually show up as weak opens and wider intraday ranges.')
-        else:
-            out.append('Foreign flows: FIIs were net buyers of about Rs ' + n(abs(fii)) + ' crore. Foreign buying is the most reliable fuel for broad rallies, because it tends to go into the index heavyweights (private banks, IT, large caps), which have the most weight in Nifty and Sensex. It also supports the rupee, which lowers imported-inflation worries and invites further foreign money. Buying that continues for several sessions usually marks a change in trend rather than a one-day blip.')
+        out.append('FII: net ' + ('bought' if fii > 0 else 'sold') + ' Rs ' + n(abs(fii)) + ' crore. ' +
+                   ('Foreign buying is the main fuel for broad rallies and supports the rupee.' if fii > 0 else
+                    'Foreign selling drags the heavyweights, weakens the rupee and raises the odds of a soft open.'))
     if dii is not None:
-        if dii > 0:
-            out.append('Domestic flows: DIIs were net buyers of about Rs ' + n(abs(dii)) + ' crore. Domestic funds receive steady monthly inflows (SIPs and insurance premiums) that have to be invested, which makes them a natural buyer of dips. This cushions the market when foreigners sell, but it rarely starts a rally on its own.')
-        else:
-            out.append('Domestic flows: DIIs were net sellers of about Rs ' + n(abs(dii)) + ' crore. Domestic funds sell mostly to book profits or meet redemptions. When they sell into a foreign-led rally it often signals a stretched market; when they sell while foreigners also sell, nobody is absorbing the supply and falls can extend.')
+        out.append('DII: net ' + ('bought' if dii > 0 else 'sold') + ' Rs ' + n(abs(dii)) + ' crore. ' +
+                   ('Steady domestic SIP money cushions dips.' if dii > 0 else
+                    'Domestic selling removes the cushion, which matters most when FIIs are also selling.'))
     if fii is not None and dii is not None:
         if fii < 0 and dii > 0:
-            absorb = dii / abs(fii) * 100 if fii else 0
-            out.append('Net picture: foreign selling is being absorbed by domestic buying, and DIIs bought about ' + format(absorb, '.0f') + '% of what FIIs sold. If domestic buying covers most of the foreign selling the index tends to hold or move sideways; if it covers well under half, dips tend to extend. A widening gap between the two over several sessions is the signal to watch.')
+            out.append('Net picture: DIIs absorbed about ' + format(dii / abs(fii) * 100 if fii else 0, '.0f') + '% of FII selling. Over 50% usually means the index holds; well under that, dips tend to extend.')
         elif fii > 0 and dii > 0:
-            out.append('Net picture: both foreign and domestic institutions were buyers. That is the strongest flow backdrop, and rallies in this setup tend to be broad-based, with dips bought quickly.')
+            out.append('Net picture: both are buying, the strongest flow backdrop.')
         elif fii > 0 and dii < 0:
-            out.append('Net picture: foreigners are buying while domestic funds sell. This is common near short-term highs, when domestic funds book profits. The rally is then dependent on foreign money, which can reverse quickly if global cues turn.')
+            out.append('Net picture: rally depends on foreign money while domestic funds book profit; fragile if global cues turn.')
         else:
-            out.append('Net picture: both groups were sellers, the weakest flow backdrop. Bounces in this setup tend to fade unless a fresh trigger (a policy move, a sharp fall in crude, a strong global rally) arrives.')
+            out.append('Net picture: both are selling, the weakest backdrop; bounces tend to fade.')
     if out:
-        out.append('What to watch: a single day is noise. Three to five consecutive sessions in the same direction, or a change in the size of flows, is what starts to move the trend. Compare today with the participant positioning below to see whether cash flows and derivatives are telling the same story.')
+        out.append('Watch: one day is noise; three to five sessions in the same direction is a trend.')
     return out
 
 
@@ -232,13 +233,11 @@ GROUPS = [
     ('Index Call Options', 'Option Index Call Long', 'Option Index Call Short'),
     ('Index Put Options', 'Option Index Put Long', 'Option Index Put Short'),
     ('Stock Futures', 'Future Stock Long', 'Future Stock Short'),
-    ('Stock Call Options', 'Option Stock Call Long', 'Option Stock Call Short'),
-    ('Stock Put Options', 'Option Stock Put Long', 'Option Stock Put Short'),
 ]
 
 # +1: buying is bullish (futures, calls). -1: buying is bearish (puts).
-POLARITY = {'Index Futures': 1, 'Stock Futures': 1, 'Index Call Options': 1, 'Stock Call Options': 1,
-            'Index Put Options': -1, 'Stock Put Options': -1}
+POLARITY = {'Index Futures': 1, 'Stock Futures': 1, 'Index Call Options': 1,
+            'Index Put Options': -1}
 
 
 def find_col(df, wanted):
@@ -333,7 +332,7 @@ def participant_summary_table(pdata):
 def participant_segment_table(pdata, seg, files):
     pol = POLARITY[seg]
     dates = [f[0] for f in files]
-    heads = ['Participant', 'Total longs', 'Total shorts', 'Change in longs', 'Change in shorts',
+    heads = ['Participant', 'Change in longs', 'Change in shorts',
              'Net bought / sold today', 'Net position ' + dates[0]]
     if len(dates) > 1:
         heads.append('Net position ' + dates[1])
@@ -344,7 +343,7 @@ def participant_segment_table(pdata, seg, files):
         d = pdata.get((seg, who))
         if not d:
             continue
-        r = [(who, ''), (n(d['lg']), ''), (n(d['sh']), ''),
+        r = [(who, ''),
              (move_text(d['dlg'], 'Added', 'Closed'), cls_for(d['dlg'], pol)),
              (move_text(d['dsh'], 'Added', 'Closed'), cls_for(d['dsh'], -pol)),
              (move_text(d['chg'], 'Bought', 'Sold'), cls_for(d['chg'], pol)),
@@ -378,11 +377,11 @@ def opt_stance(call_net, put_net):
 
 
 STANCE_TEXT = {
-    'bearish': 'net long puts and net short calls, a bearish combination (positioned for a fall or protecting against one)',
-    'bullish': 'net long calls and net short puts, a bullish combination (positioned for a rise)',
-    'seller': 'net short both calls and puts, which is typical of premium selling: the group expects the market to stay inside a range and is paid for time decay, but loses if a sharp move arrives',
-    'buyer': 'net long both calls and puts, which is typical of volatility buying: the group is paying for protection or expects a large move in either direction',
-    'mixed': 'a mixed option position without a clear direction',
+    'bearish': 'net long puts and short calls (bearish)',
+    'bullish': 'net long calls and short puts (bullish)',
+    'seller': 'net short both calls and puts (premium selling, expects a range)',
+    'buyer': 'net long both calls and puts (expects a big move or is hedging)',
+    'mixed': 'mixed, no clear direction',
 }
 
 
@@ -396,159 +395,45 @@ def fut_sentence(who, d):
     return s, sl
 
 
-def _mv(v, up, down):
-    if v > 0:
-        return up + ' ' + n(v)
-    if v < 0:
-        return down + ' ' + n(abs(v))
-    return 'unchanged'
-
-
-def seg_phrase(label, d, pol):
-    if not d or d['dlg'] is None:
-        return ''
-    s = label + ': longs ' + _mv(d['dlg'], 'added', 'closed') + ' and shorts ' + _mv(d['dsh'], 'added', 'closed')
-    if d['dlg'] > 0 and d['dsh'] < 0:
-        s += ' (fresh longs with short covering, a decisive move)'
-    elif d['dlg'] < 0 and d['dsh'] > 0:
-        s += ' (longs closed while shorts were added, a decisive move the other way)'
-    elif d['dlg'] > 0 and d['dsh'] > 0:
-        s += ' (both sides added, which looks like hedging or spread activity and not a one-way view)'
-    elif d['dlg'] < 0 and d['dsh'] < 0:
-        s += ' (both sides reduced, positions being squared off, common near expiry)'
-    s += ', so the net moved ' + sgn(d['chg'])
-    eff = pol * d['chg']
-    s += ', a ' + ('bullish' if eff > 0 else ('bearish' if eff < 0 else 'neutral')) + ' change'
-    return s
-
-
-ROLE_TEXT = {
-    'FII': 'Foreign institutions are the group whose index futures positioning is followed most closely, because it tends to lead direction.',
-    'DII': 'Domestic institutions mostly hedge large equity portfolios, so their derivative changes are better read as hedging than as a directional call.',
-    'Client': 'Clients are mainly retail and individual traders, a crowd gauge that is often on the other side of institutions near turning points.',
-    'Pro': 'Pro desks run arbitrage and market-making books, so their numbers are largely a balancing item against the other groups.',
+ROLE_SHORT = {
+    'FII': 'Most-watched group; tends to lead direction.',
+    'DII': 'Mostly hedging, not a directional call.',
+    'Client': 'Retail crowd; often on the wrong side at turning points.',
+    'Pro': 'Arbitrage and market-making; a balancing item.',
 }
-
-
-def activity_paragraphs(pdata, files):
-    out = []
-    if not pdata:
-        return out
-    for who in WHO:
-        parts = []
-        for seg, label in [('Index Futures', 'index futures'), ('Index Call Options', 'index call options'),
-                           ('Index Put Options', 'index put options')]:
-            t = seg_phrase(label, pdata.get((seg, who)), POLARITY[seg])
-            if t:
-                parts.append(t)
-        if parts:
-            out.append('What ' + who + ' did today. ' + '. '.join(p[0].upper() + p[1:] for p in parts) + '. For puts the colours are reversed: adding long puts is bearish and adding short puts is bullish. ' + ROLE_TEXT[who])
-    f = pdata.get(('Index Futures', 'FII'))
-    if f and f['pnet'] is not None and f['p2net'] is not None and files and len(files) > 2:
-        a, b, c = f['p2net'], f['pnet'], f['net']
-        t = 'Two-session trend in FII index futures: net position ' + sgn(a) + ' on ' + files[2][0] + ', ' + sgn(b) + ' on ' + files[1][0] + ' and ' + sgn(c) + ' on ' + files[0][0] + '. '
-        if c > b > a:
-            t += 'Foreigners have been moving toward long for two sessions running, a building signal that is stronger than a single-day change.'
-        elif c < b < a:
-            t += 'Foreigners have been moving toward short for two sessions running, a building signal that is stronger than a single-day change.'
-        else:
-            t += 'The direction was not consistent across the two sessions, so treat the latest change as tentative until a second session confirms it.'
-        out.append(t)
-    return out
 
 
 def participant_analysis(pdata, files=None):
     if not pdata:
         return []
     out = []
-
-    def g(seg, who):
-        return pdata.get((seg, who))
-
-    # ---- FII
-    f = g('Index Futures', 'FII')
-    if f:
-        s, sl = fut_sentence('FII', f)
-        if sl is not None:
-            if sl <= 30:
-                s += ' This is a heavily short stance. It tells us foreigners are bearish or heavily hedged. Two effects follow: on bad news the downside can extend because shorts are already in profit and add more; but a heavy short base is also fuel for a sharp rally, because a positive surprise forces short covering, which pushes the index up quickly.'
-            elif sl <= 45:
-                s += ' This is a net short lean. Foreigners are cautious but not extreme, so the market can still rise, though rallies tend to meet selling from this group.'
-            elif sl < 55:
-                s += ' This is close to balanced, so foreign institutions are not giving a strong directional signal through index futures.'
-            elif sl < 65:
-                s += ' This is a net long lean, a supportive sign: foreign money is positioned for a rise and dips are likely to be bought.'
-            else:
-                s += ' This is a heavily long stance. It supports the market but also means foreigners have little room to add; a disappointment could trigger long unwinding.'
-        if f['chg'] is not None and f['chg'] != 0:
-            if f['chg'] > 0:
-                s += ' Versus the previous day the net moved by ' + sgn(f['chg']) + ' contracts toward long, through fresh longs or short covering, a mildly supportive change.'
-            else:
-                s += ' Versus the previous day the net moved by ' + sgn(f['chg']) + ' contracts toward short, through fresh shorts or long unwinding, a mildly negative change.'
-        s += ' Index futures are the cleanest gauge of directional conviction because they carry no option premium, which is why this line is tracked more closely than any other.'
-        out.append(s)
-    fc, fp = g('Index Call Options', 'FII'), g('Index Put Options', 'FII')
-    if fc and fp:
-        st = opt_stance(fc['net'], fp['net'])
-        out.append('FII index options: net call position ' + sgn(fc['net']) + ' and net put position ' + sgn(fp['net']) + ' contracts. This reads as ' + STANCE_TEXT.get(st, '') + '. Compare it with the futures stance above: when options and futures agree, conviction is higher; when they disagree (for example short futures but short puts), the group is often hedging a book or running a spread rather than expressing one view.')
-    fs = g('Stock Futures', 'FII')
-    if fs:
-        s = 'FII stock futures: net ' + sgn(fs['net']) + ' contracts (long ' + n(fs['lg']) + ', short ' + n(fs['sh']) + ')'
-        if fs['chg'] is not None:
-            s += ', a change of ' + sgn(fs['chg']) + ' on the day'
-        s += '. Stock futures show conviction in individual shares rather than the index. Rising stock-future longs alongside a rising index suggest broad participation, which makes a rally healthier; a rising index with falling stock-future longs suggests a narrow, heavyweight-led move that is easier to reverse.'
-        out.append(s)
-
-    # ---- DII
-    di, ds = g('Index Futures', 'DII'), g('Stock Futures', 'DII')
-    if di or ds:
-        s = 'DII derivatives: '
-        if di:
-            s += 'index futures net ' + sgn(di['net']) + ' contracts'
-            if di['chg'] is not None:
-                s += ' (change ' + sgn(di['chg']) + ')'
-            s += '. '
-        if ds:
-            s += 'Stock futures net ' + sgn(ds['net']) + ' contracts. '
-        s += 'Domestic institutions mostly use derivatives to hedge large equity portfolios, so a net short futures position is usually a hedge against their cash holdings and not a bearish call. The useful signal is the change: when DIIs add to hedges it often means they expect near-term weakness, and when they lift hedges they are comfortable holding risk. Because their cash-market buying is steady, they rarely drive the index direction through derivatives.'
-        out.append(s)
-
-    # ---- Client
-    ci = g('Index Futures', 'Client')
-    if ci:
-        s, sl = fut_sentence('Client', ci)
-        s += ' The Client category is mainly retail and high-net-worth traders. It is a useful crowd gauge because this group is often positioned against institutions near turning points.'
-        if f and f['net'] * ci['net'] < 0:
-            s += ' Right now clients and FIIs are on opposite sides in index futures. Institutions are generally the better-capitalised and better-informed side, so a large gap means the market is leaning on the institutional view; the risk is that if the crowd side is wrong, it unwinds together and adds momentum to the move.'
-        elif f:
-            s += ' Clients and FIIs are leaning the same way in index futures, which means the position is less contested and any reversal would come from a news trigger rather than from the two groups clashing.'
-        out.append(s)
-    cc, cp = g('Index Call Options', 'Client'), g('Index Put Options', 'Client')
-    if cc and cp:
-        st = opt_stance(cc['net'], cp['net'])
-        out.append('Client index options: net call ' + sgn(cc['net']) + ' and net put ' + sgn(cp['net']) + ' contracts, reading as ' + STANCE_TEXT.get(st, '') + '. Retail option buyers lose money more often than they win, so a heavy net-buyer stance means premium sellers (mainly Pro and FII) are on the other side; as expiry approaches, time decay works for the sellers.')
-
-    # ---- Pro
-    pi = g('Index Futures', 'Pro')
-    pc_, pp = g('Index Call Options', 'Pro'), g('Index Put Options', 'Pro')
-    if pi:
-        s = 'Pro (proprietary desks): index futures net ' + sgn(pi['net']) + ' contracts'
-        if pi['chg'] is not None:
-            s += ' (change ' + sgn(pi['chg']) + ')'
-        s += '. '
-        if pc_ and pp:
-            st = opt_stance(pc_['net'], pp['net'])
-            s += 'In index options they are ' + STANCE_TEXT.get(st, '') + '. '
-        s += 'Pro desks run arbitrage, market-making and hedged option books, so their net number is largely a balancing item that offsets the other groups. Large daily changes usually reflect expiry-related adjustments or hedging of option books, and are best read together with the option open interest below, not as a directional view.'
-        out.append(s)
-
-    # ---- overall alignment
-    nets = {w: g('Index Futures', w)['net'] for w in WHO if g('Index Futures', w)}
+    for who in WHO:
+        d = pdata.get(('Index Futures', who))
+        if not d:
+            continue
+        sl = share_long(d['lg'], d['sh'])
+        s = who + ': index futures net ' + sgn(d['net']) + (' (' + format(sl, '.0f') + '% long)' if sl is not None else '')
+        if d['chg'] is not None:
+            s += ', moved ' + sgn(d['chg']) + ' today (' + ('bullish' if d['chg'] > 0 else ('bearish' if d['chg'] < 0 else 'flat')) + ')'
+        c, pt = pdata.get(('Index Call Options', who)), pdata.get(('Index Put Options', who))
+        if c and pt:
+            s += '. Options: ' + STANCE_TEXT.get(opt_stance(c['net'], pt['net']), '')
+        out.append(s + '. ' + ROLE_SHORT[who])
+    nets = {w: pdata[('Index Futures', w)]['net'] for w in WHO if ('Index Futures', w) in pdata}
     if len(nets) >= 3:
         longs = [w for w, v in nets.items() if v > 0]
         shorts = [w for w, v in nets.items() if v < 0]
-        out.append('Who is on which side (index futures): net long are ' + (', '.join(longs) if longs else 'nobody') + '; net short are ' + (', '.join(shorts) if shorts else 'nobody') + '. Futures are a zero-sum market, so every net long is matched by a net short elsewhere. The informative question is which side is the stronger hand: when foreign institutions and Pro are short while Client is long, the weaker hands hold the long side and a fall tends to be sharper; when FIIs are long against a short retail crowd, a rise tends to be better supported.')
-    return activity_paragraphs(pdata, files) + out
+        t = 'Sides in index futures: long ' + (', '.join(longs) or 'nobody') + '; short ' + (', '.join(shorts) or 'nobody') + '.'
+        f, ci = nets.get('FII'), nets.get('Client')
+        if f is not None and ci is not None and f * ci < 0:
+            t += ' FIIs and Clients disagree; the institutional side has usually been the stronger hand.'
+        out.append(t)
+    f = pdata.get(('Index Futures', 'FII'))
+    if f and f['pnet'] is not None and f['p2net'] is not None and files and len(files) > 2:
+        a, b, c = f['p2net'], f['pnet'], f['net']
+        trend = 'moving toward long for two sessions, a building signal' if c > b > a else ('moving toward short for two sessions, a building signal' if c < b < a else 'not consistent over two sessions, so treat today as tentative')
+        out.append('FII index futures trend (' + sgn(a) + ', ' + sgn(b) + ', ' + sgn(c) + '): ' + trend + '.')
+    return out
 
 
 # ================= OPTION CHAIN / OPEN INTEREST =================
@@ -720,9 +605,23 @@ def oi_summary(df, spot):
 
 
 def oi_compare(nifty, sensex):
+    def col(sm):
+        if not sm:
+            return None
+        return [
+            str(sm['Nearest expiry']),
+            str(sm['PCR today']) + ' (prev ' + str(sm['PCR previous day']) + ')',
+            n(sm['Total Call OI (today)']) + ' (' + sgn(sm['Change in Call OI']) + ')',
+            n(sm['Total Put OI (today)']) + ' (' + sgn(sm['Change in Put OI']) + ')',
+            n(sm['Highest Put OI strike (support)']),
+            n(sm['Highest Call OI strike (resistance)']),
+            n(sm['Max pain']),
+        ]
+    labels = ['Expiry', 'PCR', 'Call OI (change)', 'Put OI (change)', 'Support (put wall)', 'Resistance (call wall)', 'Max pain']
+    a, b = col(nifty), col(sensex)
     rows = []
-    for key in nifty:
-        rows.append({'Metric': key, 'Nifty 50': nifty.get(key), 'Sensex': sensex.get(key) if sensex else None})
+    for i, lab in enumerate(labels):
+        rows.append({'Metric': lab, 'Nifty 50': a[i] if a else '', 'Sensex': b[i] if b else 'n/a'})
     return pd.DataFrame(rows)
 
 
@@ -734,47 +633,28 @@ def oi_analysis(name, s, chg_pct=None):
     cw, mp = s['Highest Call OI strike (resistance)'], s['Max pain']
     pcr, ppcr = s['PCR today'], s['PCR previous day']
     cc, pc = s['Change in Call OI'], s['Change in Put OI']
-
-    t = name + ' put-call ratio is ' + str(pcr) + ' (previous day ' + str(ppcr) + '). '
     if pcr >= 1.3:
-        t += 'This is a heavily put-weighted chain. Put writers are confident that the market will not fall much, which is supportive; but a very high reading can also mean the market is over-hedged or has already fallen a lot, so it is a mixed signal at extremes. '
+        r = 'very put-heavy: supportive, but can mean over-hedging'
     elif pcr >= 1.0:
-        t += 'This is a put-leaning chain, normally read as supportive because put writers are defending lower levels. '
+        r = 'put-leaning: supportive, put writers defend lower levels'
     elif pcr >= 0.7:
-        t += 'This is a balanced to call-leaning chain, with neither side dominant. '
+        r = 'balanced, no side dominant'
     else:
-        t += 'This is a call-heavy chain. Call writers are capping the upside, which is cautious; at extremes it can mean the market is overbought. '
-    t += ('The ratio rose, so put writing is building faster than call writing, a mildly supportive change.' if pcr > ppcr else 'The ratio fell, so call writing is building faster than put writing, a mildly cautious change.' if pcr < ppcr else 'The ratio was unchanged.')
-    out.append(t)
-
-    t = 'Fresh positioning: call OI changed by ' + sgn(cc) + ' contracts and put OI by ' + sgn(pc) + '. '
+        r = 'call-heavy: upside is capped, cautious'
+    out.append(name + ' PCR ' + str(pcr) + ' (prev ' + str(ppcr) + '), ' + r + '; ' + ('rising, more put writing.' if pcr > ppcr else ('falling, more call writing.' if pcr < ppcr else 'unchanged.')))
+    t = name + ' fresh OI: calls ' + sgn(cc) + ', puts ' + sgn(pc) + '. ' + ('Puts are building faster, so a floor is forming.' if pc > cc else 'Calls are building faster, so a ceiling is forming.')
     if chg_pct is not None:
-        if chg_pct >= 0 and pc > cc:
-            t += 'With the index up on the day and more fresh put OI than call OI, traders are building floors under a rising market, a healthy long-buildup pattern. '
-        elif chg_pct >= 0 and cc >= pc:
-            t += 'With the index up but more fresh call OI than put OI, call writers are selling into the rally and building a ceiling; the upside may find resistance near the call wall. '
-        elif chg_pct < 0 and cc >= pc:
-            t += 'With the index down and more fresh call OI than put OI, the pattern points to fresh selling pressure and traders capping rebounds. '
-        else:
-            t += 'With the index down but more fresh put OI than call OI, put writers are stepping in to defend lower strikes, which can mean the fall is being absorbed; confirm with the next session before reading it as a bottom. '
-    else:
-        t += ('More new put OI than call OI points to traders building a floor. ' if pc > cc else 'More new call OI than put OI points to traders building a ceiling. ')
-    t += 'Open interest shows where traders are putting their money at risk, so a shift in where it builds is often an earlier warning than the price itself.'
+        t += ' Index ' + ('up' if chg_pct >= 0 else 'down') + ' ' + format(abs(chg_pct), '.2f') + '% today.'
     out.append(t)
-
     if spot:
         down, up = spot - pw, cw - spot
-        t = 'Walls: the largest put OI is at ' + n(pw) + ' (' + n(abs(down)) + ' points ' + ('below' if down >= 0 else 'above') + ' spot) and the largest call OI at ' + n(cw) + ' (' + n(abs(up)) + ' points ' + ('above' if up >= 0 else 'below') + ' spot). '
         if down < 0:
-            t += 'Spot is already below the put wall, meaning the floor has been breached; put writers are under pressure and may hedge by selling the index, which can accelerate the fall. '
+            w = 'Spot is below the put wall: the floor is breached, which can accelerate a fall.'
         elif up < 0:
-            t += 'Spot is already above the call wall, meaning the ceiling has been breached; call writers are under pressure and may buy back or hedge, which can accelerate the rise. '
+            w = 'Spot is above the call wall: the ceiling is breached, which can accelerate a rise.'
         else:
-            t += 'Spot sits between the walls, so the market is trading in the zone the option writers are comfortable with. A close outside a wall, especially with that strike open interest shrinking, is the usual sign that the range has failed. '
-        t += 'Strikes with large open interest act as magnets and barriers because writers defend them by hedging in the futures market.'
-        out.append(t)
-        pull = mp - spot
-        out.append('Max pain is at ' + n(mp) + ', ' + n(abs(pull)) + ' points ' + ('above' if pull > 0 else 'below') + ' spot. Max pain is the strike where option buyers collectively lose the most, so option writers benefit if expiry settles near it. The pull is weak far from expiry and strengthens in the last two sessions. Treat it as a tendency, not a target: strong flows can override it, but if nothing else is happening the index often drifts toward it into the close.')
+            w = 'Spot sits between the walls, so a range is likely until one breaks.'
+        out.append(name + ' range: support ' + n(pw) + ', resistance ' + n(cw) + ', max pain ' + n(mp) + ' (' + n(abs(mp - spot)) + ' pts ' + ('above' if mp > spot else 'below') + ' spot). ' + w)
     return out
 
 
@@ -810,45 +690,43 @@ def ma_analysis(name, last, df):
     out = []
     valid = df.dropna(subset=['SMA'])
     above = [int(r['Period (days)']) for _, r in valid.iterrows() if r['Price vs SMA (%)'] > 0]
-    below = [int(r['Period (days)']) for _, r in valid.iterrows() if r['Price vs SMA (%)'] <= 0]
-    t = name + ' closed at ' + indian(last, 2) + ', above ' + str(len(above)) + ' of ' + str(len(valid)) + ' simple moving averages (' + (', '.join(str(a) for a in above) if above else 'none') + ' day). '
     if len(above) == len(valid):
-        t += 'Price is above every average, a fully bullish structure. Trend-following funds and institutions are typically long in this state, so pullbacks to the 20 and 50 day averages are normally bought. '
+        t = 'Above every average: fully bullish structure; dips to the 20 and 50 day lines are usually bought.'
     elif not above:
-        t += 'Price is below every average, a fully bearish structure. Trend followers are typically short or underweight, so rallies toward the 20 and 50 day averages tend to meet supply until price reclaims them. '
+        t = 'Below every average: fully bearish structure; rallies to the 20 and 50 day lines tend to be sold.'
     elif 200 in above or 100 in above:
-        t += 'Price holds above the longer averages but not all the shorter ones, which usually describes a pullback inside a longer uptrend. The market is resting, and the 50 and 100 day averages are the zones where buyers tend to return. '
+        t = 'Above the long averages but not all short ones: a pullback inside an uptrend; the 50 and 100 day lines are buyer zones.'
     else:
-        t += 'Price holds above only the shorter averages while the longer ones are overhead, which usually describes a bounce inside a longer downtrend. Rallies face resistance from the 100 and 200 day averages. '
-    out.append(t)
+        t = 'Above only the short averages: a bounce inside a downtrend; the 100 and 200 day lines are resistance.'
+    out.append(name + ' closed at ' + indian(last, 2) + ', above ' + str(len(above)) + ' of ' + str(len(valid)) + ' SMAs. ' + t)
     r50 = valid[valid['Period (days)'] == 50]
     if len(r50):
         d50 = float(r50['Price vs SMA (%)'].iloc[0])
         if d50 > 5:
-            out.append('Stretch: price is ' + format(d50, '.1f') + '% above its 50-day SMA, a stretched reading. Markets can stay stretched, but the odds of a pause or a pullback toward the average rise, and new buyers get worse risk-reward at this distance.')
+            out.append('Stretched: ' + format(d50, '.1f') + '% above the 50-day SMA, so a pause or pullback is more likely.')
         elif d50 < -5:
-            out.append('Stretch: price is ' + format(abs(d50), '.1f') + '% below its 50-day SMA, an oversold reading. Sharp relief bounces become more likely at this distance, though in a strong downtrend price can remain below the average for a long time.')
+            out.append('Oversold: ' + format(abs(d50), '.1f') + '% below the 50-day SMA, so a relief bounce is more likely.')
         else:
-            out.append('Stretch: price is ' + format(d50, '.1f') + '% from its 50-day SMA, within a normal range, so the trend is not over-extended in either direction.')
+            out.append('Not stretched: ' + format(d50, '.1f') + '% from the 50-day SMA.')
     levels = []
     for _, r in df.iterrows():
-        for lab, col in [('SMA', 'SMA'), ('EMA', 'EMA')]:
-            v = r[col]
-            if pd.notna(v):
-                levels.append((lab + ' ' + str(int(r['Period (days)'])), float(v)))
+        for lab in ('SMA', 'EMA'):
+            if pd.notna(r[lab]):
+                levels.append((lab + ' ' + str(int(r['Period (days)'])), float(r[lab])))
     below_l = sorted([x for x in levels if x[1] <= last], key=lambda x: -x[1])[:2]
     above_l = sorted([x for x in levels if x[1] > last], key=lambda x: x[1])[:2]
-    t = 'Nearest moving-average levels: '
+    bits = []
     if below_l:
-        t += 'below price ' + ', '.join(a + ' at ' + n(b) for a, b in below_l) + ' (levels where dips have tended to find buyers); '
+        bits.append('support ' + ', '.join(a + ' ' + n(b) for a, b in below_l))
     if above_l:
-        t += 'above price ' + ', '.join(a + ' at ' + n(b) for a, b in above_l) + ' (levels where rallies may meet sellers). '
-    out.append(t.strip())
+        bits.append('resistance ' + ', '.join(a + ' ' + n(b) for a, b in above_l))
+    if bits:
+        out.append('Nearest levels: ' + '; '.join(bits) + '.')
     s50 = valid[valid['Period (days)'] == 50]['SMA']
     s200 = valid[valid['Period (days)'] == 200]['SMA']
     if len(s50) and len(s200):
         up = float(s50.iloc[0]) > float(s200.iloc[0])
-        out.append('The 50-day SMA is ' + ('above' if up else 'below') + ' the 200-day SMA, ' + ('the golden-cross arrangement, a long-term bullish backdrop in which institutions tend to stay invested.' if up else 'the death-cross arrangement, a long-term cautious backdrop in which rallies are often sold.') + ' EMAs react faster than SMAs, so when the EMA sits well away from the SMA at the same period, the recent move has been sharp.')
+        out.append('50-day SMA is ' + ('above' if up else 'below') + ' the 200-day: ' + ('golden-cross setup, long-term bullish.' if up else 'death-cross setup, long-term cautious.'))
     return out
 
 
@@ -895,36 +773,16 @@ def extra_analysis(df):
     for _, r in df.iterrows():
         nm, c, last = r['Name'], float(r['Change %']), float(r['Last'])
         d = 'rose' if c > 0 else 'fell'
+        head = nm + ' ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
         if nm == 'Dollar Index':
-            t = 'Dollar Index ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
-            if c > 0:
-                t += 'A stronger dollar tightens global liquidity. Foreign funds find emerging markets less attractive because their returns are eroded when converted back to dollars, so it is usually linked with FII selling in India and rupee weakness. A sustained climb is a headwind for the index, particularly for foreign-heavy sectors such as banks and IT services (where the rupee effect on earnings also matters).'
-            else:
-                t += 'A weaker dollar loosens global liquidity and tends to encourage flows into emerging markets, supporting the rupee and FII buying. It is a tailwind for Indian equities, especially if it persists for several sessions.'
-            out.append(t)
-        if nm == 'Brent Crude':
-            t = 'Brent crude ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
-            if c > 0:
-                t += 'India imports most of its oil, so higher crude widens the import bill and the current-account deficit, weakens the rupee, adds to inflation and squeezes margins of oil marketers, paint makers, airlines and chemicals. It is a headwind for the index; a sharp sustained rise raises the risk of a rate-cut delay.'
-            else:
-                t += 'Lower crude helps India: a smaller import bill, a firmer rupee, easier inflation and better margins for oil-using sectors. It is a tailwind for the market, though oil producers and upstream companies lose.'
-            out.append(t)
-        if nm == 'India VIX':
-            t = 'India VIX ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
-            if last < 13:
-                t += 'This is a low level: the options market expects calm and is pricing cheap protection. Low VIX favours option buyers, but complacency can precede a sudden spike. '
-            elif last < 18:
-                t += 'This is a normal level, consistent with an orderly market. '
-            elif last < 24:
-                t += 'This is an elevated level: the market expects bigger swings, premiums are rich and option sellers collect more but carry more risk. '
-            else:
-                t += 'This is a high level: the market is nervous and expects large moves, which usually accompanies sell-offs. Premiums are expensive and sharp rebounds are common once the fear fades. '
-            t += 'A rising VIX with a falling index signals fear; a falling VIX with a rising index signals a comfortable uptrend, while a rising VIX with a rising index suggests traders are buying protection against the rally ending.'
-            out.append(t)
-        if nm == 'USD/INR':
-            t = 'USD/INR ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
-            t += ('A weaker rupee tends to accompany FII selling and raises imported inflation, a headwind, though it helps IT and pharma exporters.' if c > 0 else 'A firmer rupee tends to accompany foreign inflows and eases inflation, a tailwind for the broader market, though it trims exporters earnings.')
-            out.append(t)
+            out.append(head + ('Stronger dollar: usually FII selling and rupee weakness, a headwind.' if c > 0 else 'Weaker dollar: eases liquidity, favours emerging-market inflows, a tailwind.'))
+        elif nm == 'Brent Crude':
+            out.append(head + ('Higher crude widens India import bill and inflation, a headwind.' if c > 0 else 'Lower crude helps the rupee, inflation and margins, a tailwind.'))
+        elif nm == 'India VIX':
+            lvl = 'low, calm market, cheap protection' if last < 13 else ('normal, orderly market' if last < 18 else ('elevated, bigger swings expected, rich premiums' if last < 24 else 'high, nervous market, expensive premiums'))
+            out.append(head + 'Level is ' + lvl + '. Rising VIX with a falling index means fear; falling VIX with a rising index means a comfortable uptrend.')
+        elif nm == 'USD/INR':
+            out.append(head + ('Weaker rupee: tends to come with FII selling; helps IT and pharma exporters.' if c > 0 else 'Firmer rupee: tends to come with foreign inflows; a tailwind for the broad market.'))
     return out
 
 
@@ -1024,7 +882,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     if bear:
         p.append('Cautionary factors: ' + '; '.join(bear) + '.')
     if bull and bear:
-        p.append('The evidence is mixed. When strong signals point in opposite directions the market is usually in a transition or a range, and the sensible reading is to lean on the levels (the option walls and the averages) more than on the direction.')
+        p.append('The evidence is mixed, which usually means a transition or a range, so lean on the levels (walls and averages) more than on direction.')
     blocks.append(('Overall read', p))
 
     # ---------- 2. flows and positioning
@@ -1035,7 +893,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
             t += 'foreign institutions were net ' + ('buyers' if fii > 0 else 'sellers') + ' of Rs ' + n(abs(fii)) + ' crore in cash'
         if dii is not None:
             t += (' while domestic institutions were net ' + ('buyers' if dii > 0 else 'sellers') + ' of Rs ' + n(abs(dii)) + ' crore') if fii is not None else 'domestic institutions were net ' + ('buyers' if dii > 0 else 'sellers') + ' of Rs ' + n(abs(dii)) + ' crore'
-        t += '. Cash flows show actual investing; derivatives show how institutions are hedging and speculating around it. The two together tell whether the move has real money behind it.'
+        t += '.'
         p.append(t)
     if f and sl is not None:
         t = 'On positioning, FIIs hold a ' + format(sl, '.0f') + '% long share in index futures. '
@@ -1065,10 +923,10 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
             t += 'These option figures come from the ' + str(n_label) + ' because the live chain was not available, so they reflect the last close. '
         if exp_date is not None:
             t += 'Expiry falls on ' + exp_date.strftime('%A, %d %B %Y') + ((' (' + str(dte) + ' calendar day' + ('' if dte == 1 else 's') + ' away)') if dte else ' (today)') + '. Because NSE shifts an expiry back to the previous trading day when the Tuesday falls on a holiday, this date comes straight from the option chain data. '
-        t += 'The walls mark where option writers have the most at stake, and writers defend those strikes by hedging, which is why price tends to stay between them unless a strong trigger arrives. Near expiry, time decay accelerates and small moves in the index create large percentage swings in option premiums (high gamma), so the final sessions are more volatile in premium terms than the index itself.'
+        t += 'Writers defend the walls by hedging, so price tends to stay between them unless a strong trigger arrives; premiums swing sharply in the last sessions.'
         p.append(t)
         if s_sum:
-            p.append('Sensex open interest shows a PCR of ' + str(s_sum['PCR today']) + ', largest put wall ' + n(s_sum['Highest Put OI strike (support)']) + ', largest call wall ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '. A similar PCR to Nifty means both indices are telling the same story; a divergence would suggest the heavyweights common to both are driving one more than the other.')
+            p.append('Sensex open interest shows a PCR of ' + str(s_sum['PCR today']) + ', largest put wall ' + n(s_sum['Highest Put OI strike (support)']) + ', largest call wall ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '.')
     if p:
         blocks.append(('Open interest and the expiry map', p))
 
@@ -1094,12 +952,13 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     if vix_last is not None:
         mac.append('India VIX is at ' + format(vix_last, '.1f'))
     if mac:
-        p.append('On the macro side, ' + ', '.join(mac) + '. A firmer dollar and higher crude are the two global factors that most often hurt Indian equities (through foreign selling, rupee weakness and inflation), while a softer dollar and lower crude help.')
+        p.append('On the macro side, ' + ', '.join(mac) + '.')
     if p:
         blocks.append(('Trend and macro backdrop', p))
 
     # ---------- 5. where could Nifty go by the next expiry
     p = []
+    quick_range = quick_idea = ''
     atr = ctx_n['atr'] if ctx_n else None
     sd = None
     method = ''
@@ -1117,7 +976,8 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
         center = 0.75 * (spot + tilt) + 0.25 * mp
         lo, hi = center - 0.6 * sd, center + 0.6 * sd
         p.append('To size the expected move, I use spot times volatility times the square root of time. Using ' + method + ', the one-standard-deviation range is about ' + n(spot - sd) + ' to ' + n(spot + sd) + ' (a move of roughly ' + n(sd) + ' points), and about two-thirds of outcomes should fall inside it if the options market has priced volatility correctly. The option walls give a second view: ' + n(pw) + ' to ' + n(cw) + '.')
-        p.append('My base case is that Nifty is most likely to spend the run to expiry and settle between about ' + n(lo) + ' and ' + n(hi) + ', centred near ' + n(center) + ', with a ' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt. The centre blends the current spot with a small tilt for the ' + bias + ' score and a quarter weighting toward max pain at ' + n(mp) + ', which is how the pull of the writers shows up in the estimate. It is a probabilistic zone, not a promise, and I cannot know the news that will arrive before expiry.')
+        quick_range = n(lo) + ' to ' + n(hi)
+        p.append('My base case is that Nifty is most likely to spend the run to expiry and settle between about ' + n(lo) + ' and ' + n(hi) + ', centred near ' + n(center) + ', with a ' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt. The centre blends spot, a small tilt for the ' + bias + ' score and a quarter weighting to max pain at ' + n(mp) + '. It is a probabilistic zone, not a promise.')
         bull_target = max(spot + 1.25 * sd, cw + 0.5 * sd)
         bear_target = min(spot - 1.25 * sd, pw - 0.5 * sd)
         p.append('Bullish scenario: a close above the call wall at ' + n(cw) + ', backed by FII cash buying and a falling VIX, would mean the writers defending that strike are wrong-footed and must hedge by buying. That can carry price toward ' + n(bull_target) + ' by expiry. Bearish scenario: a close below the put wall at ' + n(pw) + ', especially with FII selling and rising VIX, would force put writers to hedge by selling and could extend the fall toward ' + n(bear_target) + '. The moving averages give additional reference points: 20-day SMA ' + n(ctx_n['sma20']) + ', 50-day SMA ' + n(ctx_n['sma50']) + ', 200-day SMA ' + n(ctx_n['sma200']) + '.')
@@ -1143,6 +1003,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
         sc = rnd(max(cw, spot + 0.8 * sd))
         atm = rnd(spot)
         p.append('If I were trading this expiry, I would approach it as follows. The data gives a ' + bias + ' lean, an expected range and defined walls, which favours defined-risk structures over naked positions, because I cannot rule out a gap on news. The structures described here are illustrations derived mechanically from the open interest walls and the implied range; it ignores live premiums, margin, liquidity and your risk limits, so treat it as a template to test, not an instruction.')
+        quick_idea = ('iron condor' if lean == 'flat' else ('bull put spread' if lean == 'up' else 'bear call spread'))
         if lean == 'flat':
             p.append('Primary idea, range-bound lean: an iron condor. Sell the ' + n(sp) + ' put and the ' + n(sc) + ' call (outside both the OI walls and roughly 0.8 of the implied move) and buy the ' + n(sp - w) + ' put and ' + n(sc + w) + ' call as protection. The structure profits if Nifty stays between ' + n(sp) + ' and ' + n(sc) + ' and decay erodes the premium; the maximum loss is capped at the wing width (' + n(w) + ' points) minus the credit.')
         elif lean == 'up':
@@ -1162,22 +1023,28 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None):
     flat = []
     for _, paras in blocks:
         flat.extend(paras)
-    return flat
+    quick = 'In one line: ' + bias + ' lean (score ' + format(score, '+.1f') + ')'
+    if quick_range:
+        quick += '; base-case Nifty zone to expiry ' + quick_range
+    if quick_idea:
+        quick += '; illustrative structure: ' + quick_idea
+    quick += '. Details follow.'
+    return [quick] + flat
 
 
-CSS = ('body{font-family:Segoe UI,Arial;background:#0f172a;color:#e2e8f0;margin:0;padding:16px;max-width:1100px;margin:auto}'
-       'h1{margin:0 0 4px 0}h2{border-left:5px solid #38bdf8;padding-left:10px;margin-top:34px}'
-       'h3{color:#38bdf8;margin:18px 0 4px 0}'
+CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111111;margin:0;padding:16px;max-width:1100px;margin:auto}'
+       'h1{margin:0 0 4px 0}h2{border-left:5px solid #111111;padding-left:10px;margin-top:34px}'
+       'h3{color:#111111;margin:18px 0 4px 0}'
        '.scroll{overflow-x:auto}'
-       'table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14px;background:#111c33}'
-       'th{background:#1e293b;color:#38bdf8;text-align:left;padding:9px;white-space:nowrap}'
-       'td{padding:8px;border-bottom:1px solid #1e293b;white-space:nowrap}tr:nth-child(even) td{background:#0f1a30}'
-       '.pos{color:#22c55e;font-weight:600}.neg{color:#ef4444;font-weight:600}'
+       'table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14px;background:#ffffff}'
+       'th{background:#eeeeee;color:#111111;text-align:left;padding:9px;white-space:nowrap;border-bottom:2px solid #111111}'
+       'td{padding:8px;border-bottom:1px solid #dddddd;white-space:nowrap}tr:nth-child(even) td{background:#fafafa}'
+       '.pos{color:#15803d;font-weight:600}.neg{color:#b91c1c;font-weight:600}'
        '.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}'
-       '.card{background:#1e293b;border-radius:10px;padding:12px;font-size:14px}'
-       '.analysis{background:#13233f;border-left:4px solid #f59e0b;border-radius:6px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
-       '.analysis b{color:#fbbf24}.analysis p{margin:8px 0;line-height:1.6}'
-       '.na{color:#f59e0b}.src{font-size:13px;color:#94a3b8;margin:4px 0}')
+       '.card{background:#f5f5f5;border:1px solid #dddddd;border-radius:8px;padding:12px;font-size:14px}'
+       '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
+       '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
+       '.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
 def main():
@@ -1224,7 +1091,7 @@ def main():
     if files and pdata:
         title = 'Derivatives positions by participant (' + files[0][0] + (', compared with ' + files[1][0] if len(files) > 1 else '') + ')'
         page += tag('h2', title)
-        page += tag('p', 'Colours show the effect on the market: green is bullish and red is bearish. Put options are reversed, because buying puts is bearish and selling puts is bullish. Numbers are contracts, in Indian digit grouping.', 'src')
+        page += tag('p', 'Green is bullish, red is bearish (reversed for puts: buying puts is bearish). Numbers are contracts.', 'src')
         summ = safe(participant_summary_table, pdata)
         if summ:
             page += tag('h3', 'Net contracts bought (+) or sold (-) today, all segments') + summ
@@ -1250,12 +1117,6 @@ def main():
             page += tag('p', 'Sensex option data could not be fetched from BSE, either live or from the last trading session.', 'na')
         page += note((safe(oi_analysis, 'Nifty', n_sum, ctx_n['chg_pct'] if ctx_n else None) or []) +
                      (safe(oi_analysis, 'Sensex', s_sum, ctx_s['chg_pct'] if ctx_s else None) or []))
-        try:
-            ref = float(n_spot) if n_spot else float(n_near['Strike'].median())
-            around = n_near[(n_near['Strike'] > ref - 500) & (n_near['Strike'] < ref + 500)][['Strike', 'Call OI', 'Call Chg OI', 'Put OI', 'Put Chg OI']]
-            page += tag('h3', 'Nifty strike-wise open interest near spot') + table_html(around, ('Call Chg OI', 'Put Chg OI'))
-        except Exception:
-            pass
     else:
         page += tag('p', 'NSE option chain could not be fetched, either live or from the last trading session.', 'na')
 
@@ -1269,7 +1130,7 @@ def main():
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label)
     if res:
-        page += note(res, 'Conclusion')
+        page += note(res, 'Conclusion', False)
     else:
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 

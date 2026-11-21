@@ -1093,44 +1093,32 @@ def age_text(h):
     return (str(int(h)) + 'h ago') if h < 24 else (str(int(h // 24)) + 'd ago')
 
 
-def news_table(news):
-    rows = []
-    for blk in news:
-        for i, it in enumerate(blk['items']):
+def news_bullets(evs):
+    """Quick-read bullet lists: upcoming events first, then live stories by theme."""
+    out = ''
+    items = evs.get('events') or []
+    if items:
+        lis = ''.join(tag('li', tag('b', e['date'].strftime('%a %d %b') + ': ') + html.escape(e['event']) + '. ' + html.escape(e['why'])) for e in items)
+        out += tag('h3', 'Upcoming events') + tag('ul', lis, 'quick')
+    for blk in evs.get('news') or []:
+        if not blk['items']:
+            continue
+        lis = ''
+        for it in blk['items'][:3]:
             link = LT + 'a href=' + Q + html.escape(it['link'], quote=True) + Q + ' target=' + Q + '_blank' + Q + ' rel=' + Q + 'noopener' + Q + GT + html.escape(it['title']) + LT + '/a' + GT
-            rows.append([(blk['theme'] if i == 0 else '', 'hi'), (link, ''), (html.escape(it['src']), ''), (age_text(it['age']), ''),
-                         ('Upcoming' if it['upcoming'] else 'Developing', 'hi' if it['upcoming'] else ''),
-                         (blk['why'] if i == 0 else '', '')])
-    if not rows:
-        return tag('p', 'Live headlines could not be fetched this morning.', 'na')
-    head = tag('tr', ''.join(tag('th', h) for h in ['Theme', 'Headline', 'Source', 'Age', 'Type', 'Why markets care']))
-    body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
-    return tag('div', tag('table', head + body, 'evt news'), 'scroll')
-
-
-def news_analysis(news):
-    out = []
-    for blk in news:
-        if blk['items']:
-            top = blk['items'][0]
-            out.append(blk['theme'] + ': ' + str(len(blk['items'])) + (' live story' if len(blk['items']) == 1 else ' live stories') + '; lead story: ' + html.escape(top['title']) + ' (' + html.escape(top['src']) + ', ' + age_text(top['age']) + ').')
-    up = [i for b in news for i in b['items'] if i['upcoming']]
-    if up:
-        out.append(str(len(up)) + ' stories point to something still to happen (talks, meetings, deadlines, announcements); these are the ones to watch for a market reaction.')
-    if out:
-        out.append('Headlines are collected automatically and ranked by keywords, so read them as a radar, not a verdict. Open the story before acting on it.')
+            mark = tag('b', 'Upcoming: ') if it['upcoming'] else ''
+            lis += tag('li', mark + link + ' (' + html.escape(it['src']) + ', ' + age_text(it['age']) + ')')
+        out += tag('h3', blk['theme']) + tag('p', blk['why'], 'src') + tag('ul', lis, 'quick')
+    if not out:
+        out = tag('p', 'Live headlines could not be fetched this morning.', 'na')
     return out
 
 
 def build_events():
     start = dt.datetime.now(IST).date()
     end = start + dt.timedelta(days=6)
-    hol = nse_holidays()
     rows = []
-    for fn in (lambda: expiry_events(start, end, hol), lambda: holiday_events(start, end, hol),
-               lambda: us_holiday_events(start, end), lambda: india_data_events(start, end),
-               lambda: central_bank_events(start, end), lambda: global_feed(start, end),
-               lambda: corporate_events(start, end), lambda: curated_events(start, end)):
+    for fn in (lambda: curated_events(start, end),):
         got = safe(fn)
         if got:
             rows.extend(got)
@@ -1143,41 +1131,6 @@ def build_events():
     order = {'High': 0, 'Medium': 1, 'Low': 2}
     uniq.sort(key=lambda e: (e['date'], '00:00' if e['time'] in ('All day', 'Varies') else e['time'], order.get(e['imp'], 3)))
     return {'start': start, 'end': end, 'events': uniq, 'news': safe(news_by_theme) or []}
-
-
-def events_table(evs):
-    rows = []
-    for e in evs['events']:
-        rows.append([(e['date'].strftime('%a %d %b'), ''), (e['time'], ''), (e['region'], ''), (e['event'], ''),
-                     (e['imp'], 'hi' if e['imp'] == 'High' else ''), (e['why'], '')])
-    if not rows:
-        return tag('p', 'No scheduled catalysts found for the next 7 days.', 'na')
-    head = tag('tr', ''.join(tag('th', h) for h in ['Date (IST)', 'Time (IST)', 'Region', 'Event', 'Importance', 'Why it matters']))
-    body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
-    return tag('div', tag('table', head + body, 'evt'), 'scroll')
-
-
-def events_analysis(evs):
-    out = []
-    items = evs['events']
-    high = [e for e in items if e['imp'] == 'High']
-    if high:
-        out.append('High-importance: ' + '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in high[:6]) + '.')
-    exp = [e for e in items if 'expiry' in e['event']]
-    if exp:
-        out.append('Derivatives expiry: ' + '; '.join(e['event'] + ' on ' + e['date'].strftime('%a %d %b') for e in exp) + '. Expect wider intraday swings and strikes acting as magnets.')
-    hol = [e for e in items if 'closed' in e['event'].lower() and e['region'] == 'India']
-    if hol:
-        out.append('Indian market holiday: ' + '; '.join(e['event'].replace('NSE/BSE closed: ', '') + ' on ' + e['date'].strftime('%a %d %b') for e in hol) + '. Expiries move to the previous trading day.')
-    ush = [e for e in items if e['region'] == 'US' and 'closed' in e['event'].lower()]
-    if ush:
-        out.append('US market holiday: ' + '; '.join(e['event'].replace('US markets closed: ', '') + ' on ' + e['date'].strftime('%a %d %b') for e in ush) + '. Global liquidity is thinner, so moves can be erratic.')
-    cnt = collections.Counter(e['date'] for e in high)
-    if cnt:
-        d, c = cnt.most_common(1)[0]
-        out.append('Busiest day: ' + d.strftime('%a %d %b') + ' with ' + str(c) + ' high-importance event' + ('s' if c > 1 else '') + '.')
-    out.append('How to use: markets react to the surprise versus forecast, not the number itself. US data lands after the Indian close, so it shows up at the next open.')
-    return out
 
 
 # ================= OVERALL CONCLUSION =================
@@ -1364,7 +1317,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
         rows.append(('Nifty range and strategy', 'Not available: option chain (live or last session) or price history could not be fetched.'))
 
     if events and events.get('events'):
-        hi = [e for e in events['events'] if e['imp'] == 'High'][:5]
+        hi = events['events'][:5]
         if hi:
             rows.append(('Events to watch', '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in hi) + '.'))
     if events and events.get('news'):
@@ -1390,6 +1343,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
        '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}'
        '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(4){min-width:200px}.evt td:nth-child(6){min-width:240px}.news td:nth-child(2){min-width:320px}'
+       'ul.quick{margin:4px 0 10px 0;padding-left:20px}ul.quick li{margin:5px 0;line-height:1.5;font-size:14px}'
        '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
@@ -1475,18 +1429,11 @@ def main():
 
     evs = safe(build_events)
     if evs:
-        page += tag('h2', 'Market-moving events: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
-        page += tag('h3', 'Live news and announcements that can move markets (last 48 hours)')
-        page += tag('p', 'Collected automatically from public news headlines at each refresh. Click a headline to read the story.', 'src')
-        if evs.get('news'):
-            page += news_table(evs['news']) + note(safe(news_analysis, evs['news']) or [])
-        else:
-            page += tag('p', 'Live headlines could not be fetched this morning.', 'na')
-        page += tag('h3', 'Scheduled catalysts (times in IST)')
-        page += tag('p', 'Expiries, holidays, central-bank dates and major meetings. RBI and Fed dates are from official schedules; India data dates follow the usual release pattern, so confirm timing before trading.', 'src')
-        page += events_table(evs) + note(safe(events_analysis, evs) or [])
+        page += tag('h2', 'Market-moving events and news: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
+        page += tag('p', 'Headlines are collected automatically from public news at each refresh and ranked by keywords. Read them as a radar and open the story before acting on it.', 'src')
+        page += news_bullets(evs)
     else:
-        page += tag('h2', 'Market-moving events: next 7 days') + tag('p', 'Events could not be built this morning.', 'na')
+        page += tag('h2', 'Market-moving events and news') + tag('p', 'Events could not be built this morning.', 'na')
 
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label, evs)

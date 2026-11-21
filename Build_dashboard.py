@@ -1005,7 +1005,7 @@ def corporate_events(start, end):
     return out
 
 
-# ---- India-focused market-moving events and news
+# ---- India-focused market-moving events
 # (keywords, label, how Indian markets could react, sectors to watch). First match wins.
 REACT = [
     (('india cpi', 'india wpi', 'india inflation', 'retail inflation'), 'Two-way',
@@ -1016,6 +1016,8 @@ REACT = [
      'Output cuts or higher crude hurt India (import bill, rupee, inflation); a quota hike or lower crude helps', 'OMCs (BPCL, IOC, HPCL), paints, aviation, tyres, USD/INR'),
     (('rbi', 'repo rate', 'mpc', 'monetary policy'), 'Two-way',
      'Rate cut or easy liquidity lifts banks, realty and autos; a hawkish hold weighs on them', 'Bank Nifty, NBFCs, realty, autos, 10-year yield'),
+    (('beige book', 'fed minutes'), 'Two-way',
+     'Shows how the Fed reads the economy; shifts rate-cut hopes, the dollar and FII flows', 'USD/INR, IT, private banks, FII flows'),
     (('fomc', 'federal reserve', 'fed ', 'powell'), 'Two-way',
      'Dovish Fed weakens the dollar and brings FII inflows; hawkish Fed does the opposite', 'USD/INR, IT, private banks, FII flows'),
     (('cpi', 'non-farm', 'nfp', 'pce', 'employment change', 'unemployment'), 'Two-way',
@@ -1031,6 +1033,8 @@ REACT = [
     (('rupee', 'usd/inr'), 'Two-way',
      'A weak rupee helps IT and pharma exporters, hurts importers and raises inflation', 'IT, pharma, oil marketers, airlines'),
     (('budget', 'gst', 'tax'), 'Two-way', 'Policy changes hit specific sectors directly', 'Sector-specific'),
+    (('pmi',), 'Two-way',
+     'Global growth read: strong data supports risk appetite and exporters, weak data raises slowdown fears', 'IT, metals, autos, exporters'),
     (('ecb', 'lagarde', 'euro'), 'Two-way',
      'Indirect: moves the euro and dollar, so FII flows and IT services revenue', 'USD/INR, IT services'),
     (('china', 'asean'), 'Two-way',
@@ -1038,29 +1042,14 @@ REACT = [
 ]
 REACT_DEFAULT = ('Two-way', 'Indirect effect through the dollar, oil and FII flows', 'Nifty, Bank Nifty, USD/INR')
 
-NEWS_THEMES = [
-    ('Trade', 'India (trade deal OR tariffs OR "trade talks") (US OR China OR EU)'),
-    ('Rupee and FII flows', 'India (rupee OR FII OR FPI OR "foreign investors") Sensex OR Nifty'),
-    ('RBI and SEBI', '(RBI OR SEBI) India (policy OR rules OR rate OR "F&O")'),
-    ('Oil and geopolitics', '(OPEC OR "crude oil" OR Brent OR sanctions OR war OR ceasefire) India'),
-    ('Fed and global cues', '(Fed OR "rate cut" OR "US inflation" OR "dollar index") India markets'),
-    ('Indian markets', 'Sensex Nifty outlook OR "Dalal Street" next week'),
-]
-INDIA_WORDS = ('india', 'indian', 'rupee', 'rbi', 'sebi', 'nifty', 'sensex', 'fii', 'fpi', 'dalal', 'mumbai', 'modi', 'adani',
-               'reliance', 'tata', 'hdfc', 'icici', 'infosys', 'tcs', 'opec', 'brent', 'crude', 'oil price', 'fomc', 'federal reserve',
-               'fed rate', 'rate cut', 'dollar index')
-HIGH_WORDS = ('rbi', 'sebi', 'tariff', 'trade deal', 'sanction', 'war', 'opec', 'fed', 'rate cut', 'rate hike', 'fii', 'crude')
-UPCOMING_WORDS = ('next week', 'this week', 'will meet', 'to meet', 'set to', 'scheduled', 'deadline', 'talks', 'summit',
-                  'expected to', 'due ', 'ahead of', 'to announce', 'will announce', 'visit', 'meeting', 'vote')
-BULL_WORDS = ('trade deal', 'agreement signed', 'deal signed', 'rate cut', 'eases', 'rally', 'inflow', 'buying', 'record high', 'upgrade',
-              'boost', 'relief', 'ceasefire', 'stimulus', 'tariff cut', 'cuts tariff', 'gains', 'rebound')
-BEAR_WORDS = ('tariff', 'war', 'sanction', 'rate hike', 'outflow', 'selling', 'slump', 'crash', 'plunge', 'escalat', 'threat',
-              'strike', 'downgrade', 'default', 'shutdown', 'weak', 'tumble', 'sell-off', 'selloff', 'warns')
-
 CURATED = [
-    # (date, time, region, event, importance) - checked against published week-ahead calendars
+    # (date, IST time, region, event, importance). Checked against published week-ahead calendars (20-21 Nov 2026).
+    (dt.date(2026, 11, 23), 'Varies', 'Global', 'Global flash PMIs for November (US, euro area, UK, Japan)', 'Medium'),
     (dt.date(2026, 11, 23), 'All day', 'China', 'China-ASEAN Week opens in Chongqing (trade, investment, logistics)', 'Low'),
-    (dt.date(2026, 11, 26), 'All day', 'Europe', 'Eurozone leaders meet in Brussels (26-27 Nov) on a successor to ECB President Lagarde', 'Low'),
+    (dt.date(2026, 11, 25), '19:00', 'US', 'US PCE price index (Oct), Q3 GDP second estimate and durable goods', 'High'),
+    (dt.date(2026, 11, 26), '00:30', 'US', 'US Fed Beige Book (regional economy read ahead of the December meeting)', 'Medium'),
+    (dt.date(2026, 11, 26), '18:00', 'Europe', 'ECB minutes of the October meeting', 'Medium'),
+    (dt.date(2026, 11, 26), 'All day', 'Europe', 'Special European Council (26-27 Nov); ECB president succession on the agenda', 'Medium'),
     (dt.date(2026, 11, 29), 'Online', 'Global', 'OPEC+ ministers meet on 2027 production targets and quota framework', 'High'),
 ]
 
@@ -1071,18 +1060,6 @@ def classify(text):
         if any(k in low for k in keys):
             return label, react, sectors
     return REACT_DEFAULT
-
-
-def sentiment(title):
-    low = title.lower()
-    if any(w in low for w in ('oil', 'crude', 'brent')):
-        if any(w in low for w in ('fall', 'slip', 'drop', 'ease', 'decline', 'tumble', 'cool')):
-            return 'Bullish'
-        if any(w in low for w in ('rise', 'surge', 'jump', 'climb', 'spike', 'soar', 'rally')):
-            return 'Bearish'
-    b = sum(w in low for w in BULL_WORDS)
-    r = sum(w in low for w in BEAR_WORDS)
-    return 'Bullish' if b > r else ('Bearish' if r > b else 'Two-way')
 
 
 def curated_events(start, end):
@@ -1099,58 +1076,6 @@ def curated_events(start, end):
     except Exception:
         pass
     return out
-
-
-def fetch_news(query):
-    url = 'https://news.google.com/rss/search?q=' + requests.utils.quote(query + ' when:2d') + '&hl=en-IN&gl=IN&ceid=IN:en'
-    r = requests.get(url, headers=HEADERS, timeout=20)
-    if r.status_code != 200:
-        return []
-    root = ET.fromstring(r.content)
-    now_utc = dt.datetime.now(dt.timezone.utc)
-    out = []
-    for it in root.iter('item'):
-        try:
-            title = (it.findtext('title') or '').strip()
-            src = (it.findtext('source') or '').strip()
-            if src and title.endswith(' - ' + src):
-                title = title[:-(len(src) + 3)]
-            pub = email.utils.parsedate_to_datetime(it.findtext('pubDate'))
-            age = (now_utc - pub).total_seconds() / 3600.0
-            if not title or age < -1 or age > 50:
-                continue
-            out.append({'title': title, 'link': it.findtext('link') or '', 'src': src, 'age': max(age, 0)})
-        except Exception:
-            continue
-    return out
-
-
-def age_text(h):
-    return (str(int(h)) + 'h ago') if h < 24 else (str(int(h // 24)) + 'd ago')
-
-
-def news_rows(limit=10):
-    """India-relevant stories only, each tagged with a likely effect on Indian markets."""
-    seen, rows = set(), []
-    for theme, query in NEWS_THEMES:
-        for it in safe(fetch_news, query) or []:
-            low = it['title'].lower()
-            key = low[:45]
-            if key in seen or not any(w in low for w in INDIA_WORDS):
-                continue
-            seen.add(key)
-            label, react, sectors = classify(it['title'])
-            sent = sentiment(it['title'])
-            if sent != 'Two-way':
-                label = sent
-            elif label == 'Bearish':
-                label = 'Two-way'
-            up = any(w in low for w in UPCOMING_WORDS)
-            imp = 'High' if any(w in low for w in HIGH_WORDS) else 'Medium'
-            rows.append({'title': it['title'], 'link': it['link'], 'src': it['src'], 'age': it['age'], 'upcoming': up,
-                         'label': label, 'react': react, 'sectors': sectors, 'imp': imp})
-    rows.sort(key=lambda r: (r['imp'] != 'High', not r['upcoming'], r['age']))
-    return rows[:limit]
 
 
 def build_events():
@@ -1173,7 +1098,7 @@ def build_events():
             uniq.append(e)
     order = {'High': 0, 'Medium': 1, 'Low': 2}
     uniq.sort(key=lambda e: (e['date'], order.get(e['imp'], 3)))
-    return {'start': start, 'end': end, 'events': uniq, 'news': safe(news_rows) or []}
+    return {'start': start, 'end': end, 'events': uniq}
 
 
 def effect_cls(label):
@@ -1183,32 +1108,26 @@ def effect_cls(label):
 def events_table(evs):
     rows = []
     for e in evs['events']:
-        when = e['date'].strftime('%a %d %b') + (', ' + e['time'] if e['time'][:1].isdigit() else '')
-        rows.append([(when, ''), (html.escape(e['event']), ''), ('Scheduled', ''), (e['label'], effect_cls(e['label'])),
+        when = e['date'].strftime('%a %d %b') + (', ' + e['time'] + ' IST' if e['time'][:1].isdigit() else '')
+        rows.append([(when, ''), (html.escape(e['event']), ''), (e['label'], effect_cls(e['label'])),
                      (html.escape(e['react']), ''), (html.escape(e['sectors']), ''), (e['imp'], 'hi' if e['imp'] == 'High' else '')])
-    for r in evs['news']:
-        link = LT + 'a href=' + Q + html.escape(r['link'], quote=True) + Q + ' target=' + Q + '_blank' + Q + ' rel=' + Q + 'noopener' + Q + GT + html.escape(r['title']) + LT + '/a' + GT
-        rows.append([(age_text(r['age']), ''), (link, ''), ('Upcoming news' if r['upcoming'] else 'News', ''),
-                     (r['label'], effect_cls(r['label'])), (html.escape(r['react']), ''), (html.escape(r['sectors']), ''),
-                     (r['imp'], 'hi' if r['imp'] == 'High' else '')])
     if not rows:
-        return tag('p', 'No India-relevant events or news could be fetched this morning.', 'na')
-    heads = ['When', 'Event', 'Type', 'Likely effect', 'How Indian markets could react', 'Sectors / levels to watch', 'Impact']
+        return tag('p', 'No major scheduled events found for the next 7 days.', 'na')
+    heads = ['When', 'Event', 'Likely effect', 'How Indian markets could react', 'Sectors / levels to watch', 'Impact']
     head = tag('tr', ''.join(tag('th', h) for h in heads))
     body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
     return tag('div', tag('table', head + body, 'evt'), 'scroll')
 
 
 def events_analysis(evs):
-    allr = [(e['label'], e['imp'], e['event']) for e in evs['events']] + [(r['label'], r['imp'], r['title']) for r in evs['news']]
-    if not allr:
+    items = evs['events']
+    if not items:
         return []
-    cnt = collections.Counter(a[0] for a in allr)
-    out = ['Tilt of the items above: ' + str(cnt.get('Bullish', 0)) + ' lean bullish, ' + str(cnt.get('Bearish', 0)) + ' lean bearish, ' + str(cnt.get('Two-way', 0)) + ' two-way (outcome decides).']
-    hi = [a[2] for a in allr if a[1] == 'High'][:3]
+    hi = [e['event'] for e in items if e['imp'] == 'High']
+    out = []
     if hi:
-        out.append('Highest impact: ' + '; '.join(html.escape(h) for h in hi) + '.')
-    out.append('Effects are the usual market reaction to each type of event, not a forecast of the outcome. Open the story before acting on it.')
+        out.append('Highest impact: ' + '; '.join(html.escape(h) for h in hi[:3]) + '.')
+    out.append('Effects show how Indian markets usually react to each type of event; the direction depends on the outcome versus expectations, so most are two-way.')
     return out
 
 
@@ -1357,10 +1276,8 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
 
     if events:
         ev_bits = []
-        for e in (events.get('events') or [])[:2]:
+        for e in sorted(events.get('events') or [], key=lambda x: {'High': 0, 'Medium': 1}.get(x['imp'], 2))[:3]:
             ev_bits.append(e['event'] + ' (' + e['date'].strftime('%a %d %b') + '): ' + e['label'].lower() + '. ' + e['react'])
-        for r in (events.get('news') or [])[:1]:
-            ev_bits.append(r['title'] + ': ' + r['label'].lower() + '. ' + r['react'])
         if ev_bits:
             rows1.append(('Event risk this week', ' | '.join(ev_bits)))
 
@@ -1423,7 +1340,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
        '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}.strat td:first-child{width:180px}.strat td:nth-child(2){min-width:230px}'
-       '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(2){min-width:260px}.evt td:nth-child(5){min-width:260px}.evt td:nth-child(6){min-width:170px}'
+       '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(2){min-width:260px}.evt td:nth-child(4){min-width:260px}.evt td:nth-child(5){min-width:170px}'
        'ul.quick{margin:4px 0 10px 0;padding-left:20px}ul.quick li{margin:5px 0;line-height:1.5;font-size:14px}'
        '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
@@ -1511,7 +1428,7 @@ def main():
     evs = safe(build_events)
     if evs:
         page += tag('h2', 'Market-moving events for India: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
-        page += tag('p', 'Scheduled events plus India-relevant news from the last 48 hours, collected automatically at each refresh. Green means a bullish lean for Nifty and Sensex, red bearish, plain means two-way.', 'src')
+        page += tag('p', 'Major scheduled events and announcements that can move Nifty and Sensex. Times are IST. Green means a bullish lean, red bearish, plain means two-way (the outcome decides).', 'src')
         page += events_table(evs) + note(safe(events_analysis, evs) or [])
     else:
         page += tag('h2', 'Market-moving events for India') + tag('p', 'Events could not be built this morning.', 'na')

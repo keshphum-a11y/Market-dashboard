@@ -1224,10 +1224,11 @@ def days_to_expiry(exp):
 
 def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, events=None):
     bull, bear = [], []
-    st = {'score': 0.0}
+    st = {'score': 0.0, 'cat': 'Flows', 'cats': {}}
 
     def add(points, text):
         st['score'] += points
+        st['cats'][st['cat']] = st['cats'].get(st['cat'], 0) + points
         if points > 0:
             bull.append(text)
         elif points < 0:
@@ -1240,6 +1241,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
     if dii is not None:
         add(0.5 if dii > 0 else -0.5, 'DIIs were net ' + ('buyers' if dii > 0 else 'sellers') + ' (Rs ' + n(abs(dii)) + ' crore)')
 
+    st['cat'] = 'Positioning'
     f = pdata.get(('Index Futures', 'FII')) if pdata else None
     sl = None
     if f:
@@ -1258,6 +1260,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
     elif fst == 'bearish':
         add(-1, 'FIIs hold a bearish index option combination (long puts, short calls)')
 
+    st['cat'] = 'Options map'
     spot = (n_sum['Spot'] if n_sum and n_sum['Spot'] else None) or (ctx_n['price'] if ctx_n else None)
     if n_sum:
         pcr = n_sum['PCR today']
@@ -1273,12 +1276,14 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
                 add(0.5, 'max pain sits above spot, a mild upward pull')
             elif gap < -0.4:
                 add(-0.5, 'max pain sits below spot, a mild downward pull')
+    st['cat'] = 'Trend'
     if ctx_n:
         above = sum([ctx_n['price'] > ctx_n['sma20'], ctx_n['price'] > ctx_n['sma50'], ctx_n['price'] > ctx_n['sma200']])
         if above == 3:
             add(1, 'Nifty is above its 20, 50 and 200 day averages')
         elif above == 0:
             add(-1, 'Nifty is below its 20, 50 and 200 day averages')
+    st['cat'] = 'Macro'
     dxy, brent, vixc = extra_value(extra, 'Dollar Index', 'Change %'), extra_value(extra, 'Brent Crude', 'Change %'), extra_value(extra, 'India VIX', 'Change %')
     if dxy is not None and abs(dxy) > 0.3:
         add(-0.5 if dxy > 0 else 0.5, 'the dollar index ' + ('rose' if dxy > 0 else 'fell'))
@@ -1299,62 +1304,15 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
     else:
         bias, lean = 'bearish', 'down'
 
-    rows = []
+    cat_lab = {}
+    for k, v in st['cats'].items():
+        cat_lab[k] = 'bullish' if v > 0.5 else ('bearish' if v < -0.5 else 'neutral')
+    agree = sum(1 for v in cat_lab.values() if (v == 'bullish' and score > 0) or (v == 'bearish' and score < 0) or (v == 'neutral' and lean == 'flat'))
+    conviction = 'high' if cat_lab and agree >= max(3, len(cat_lab) - 1) else ('moderate' if agree >= 2 else 'low (signals are mixed)')
+
     vix_last = extra_value(extra, 'India VIX')
     exp_str = n_sum['Nearest expiry'] if n_sum else None
     dte, exp_date = days_to_expiry(exp_str) if exp_str else (None, None)
-
-    rows.append(('Overall bias', bias.capitalize() + ' (score ' + format(score, '+.1f') + '; +4 or more bullish, -4 or less bearish, in between neutral to mild).'))
-    rows.append(('Supportive factors', '; '.join(bull) + '.' if bull else 'None.'))
-    rows.append(('Cautionary factors', '; '.join(bear) + '.' if bear else 'None.'))
-
-    if fii is not None or dii is not None:
-        t = []
-        if fii is not None:
-            t.append('FIIs net ' + ('bought' if fii > 0 else 'sold') + ' Rs ' + n(abs(fii)) + ' crore')
-        if dii is not None:
-            t.append('DIIs net ' + ('bought' if dii > 0 else 'sold') + ' Rs ' + n(abs(dii)) + ' crore')
-        rows.append(('Cash flows', ', '.join(t) + '.'))
-
-    if f and sl is not None:
-        t = 'FII index futures ' + format(sl, '.0f') + '% long (net ' + sgn(f['net']) + ')'
-        if fst:
-            t += '; FII options ' + STANCE_TEXT.get(fst, '')
-        ci = pdata.get(('Index Futures', 'Client'))
-        if ci:
-            t += '; Clients net ' + sgn(ci['net']) + (', opposite to FIIs' if f['net'] * ci['net'] < 0 else ', same side as FIIs')
-        rows.append(('Derivatives positioning', t + '.'))
-
-    if n_sum and spot:
-        pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
-        t = 'Expiry ' + str(exp_str)
-        if exp_date is not None:
-            t += ' (' + exp_date.strftime('%A') + (', ' + str(dte) + ' day' + ('' if dte == 1 else 's') + ' away' if dte else ', today') + ')'
-        t += '. Spot ' + indian(spot, 2) + ', support (put wall) ' + n(pw) + ', resistance (call wall) ' + n(cw) + ', max pain ' + n(mp) + ', PCR ' + str(n_sum['PCR today']) + '.'
-        if n_label and 'Last trading' in str(n_label):
-            t += ' Data is from the ' + str(n_label) + '.'
-        rows.append(('Nifty expiry map', t))
-    if s_sum:
-        rows.append(('Sensex open interest', 'PCR ' + str(s_sum['PCR today']) + ', support ' + n(s_sum['Highest Put OI strike (support)']) + ', resistance ' + n(s_sum['Highest Call OI strike (resistance)']) + ', max pain ' + n(s_sum['Max pain']) + '.'))
-
-    tr = []
-    for nm, c in [('Nifty', ctx_n), ('Sensex', ctx_s)]:
-        if c:
-            pos = 'above the 50 and 200 day averages (uptrend)' if c['price'] > c['sma50'] and c['price'] > c['sma200'] else ('below the 50-day but above the 200-day (correction inside an uptrend)' if c['price'] > c['sma200'] else 'below the 200-day average (weak structure)')
-            tr.append(nm + ' ' + n(c['price']) + ' (' + format(c['chg_pct'], '+.2f') + '% today, ' + format(c['ret20'], '+.1f') + '% in 20 sessions), ' + pos)
-    if tr:
-        rows.append(('Trend', '; '.join(tr) + '.'))
-
-    mac = []
-    if dxy is not None:
-        mac.append('Dollar index ' + format(dxy, '+.2f') + '% (' + ('headwind' if dxy > 0 else 'tailwind') + ')')
-    if brent is not None:
-        mac.append('Brent ' + format(brent, '+.2f') + '% (' + ('headwind' if brent > 0 else 'tailwind') + ')')
-    if vix_last is not None:
-        mac.append('India VIX ' + format(vix_last, '.1f'))
-    if mac:
-        rows.append(('Macro', ', '.join(mac) + '.'))
-
     atr = ctx_n['atr'] if ctx_n else None
     sd = None
     method = ''
@@ -1366,46 +1324,90 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
             days = max(round((dte if dte is not None else 1) * 5 / 7), 1)
             sd = atr * math.sqrt(days)
             method = '14-day ATR ' + n(atr)
+
+    rows1, rows2, strategies = [], [], []
     quick_range = quick_idea = ''
+    exp_txt = (str(exp_str) + (' (' + exp_date.strftime('%a') + ')' if exp_date else '')) if exp_str else 'the next expiry'
+
+    ov = bias.capitalize() + ' (score ' + format(score, '+.1f') + ').'
+    if cat_lab:
+        ov += ' Area by area: ' + ', '.join(k.lower() + ' ' + v for k, v in cat_lab.items()) + '. Conviction is ' + conviction + '.'
+    if bull and bear:
+        ov += ' Signals conflict, so levels matter more than direction.'
+    rows1.append(('Overall view', ov))
+
     if sd and n_sum:
         pw, cw, mp = n_sum['Highest Put OI strike (support)'], n_sum['Highest Call OI strike (resistance)'], n_sum['Max pain']
         tilt = sd * max(-0.5, min(0.5, score / 8.0))
         center = 0.75 * (spot + tilt) + 0.25 * mp
         lo, hi = center - 0.6 * sd, center + 0.6 * sd
         quick_range = n(lo) + ' to ' + n(hi)
-        rows.append(('Nifty range at next expiry', 'Base case ' + n(lo) + ' to ' + n(hi) + ', centred near ' + n(center) + ' (' + ('mild upward' if lean == 'up' else ('mild downward' if lean == 'down' else 'neutral')) + ' tilt). One-standard-deviation range from ' + method + ': ' + n(spot - sd) + ' to ' + n(spot + sd) + '. Option walls: ' + n(pw) + ' to ' + n(cw) + '.'))
-        rows.append(('Bullish scenario', 'Close above ' + n(cw) + ' with FII buying and falling VIX; target about ' + n(max(spot + 1.25 * sd, cw + 0.5 * sd)) + '.'))
-        rows.append(('Bearish scenario', 'Close below ' + n(pw) + ' with FII selling and rising VIX; target about ' + n(min(spot - 1.25 * sd, pw - 0.5 * sd)) + '.'))
+        if lean == 'up':
+            react = 'Dips toward ' + n(pw) + ' are likely to be bought; rallies may stall near ' + n(cw) + ', where call writers defend. Expect a steady climb more than a gap.'
+        elif lean == 'down':
+            react = 'Rallies toward ' + n(cw) + ' are likely to be sold; whether ' + n(pw) + ' holds decides if this is a dip or a breakdown.'
+        else:
+            react = 'Likely to trade between ' + n(pw) + ' and ' + n(cw) + '; a move outside needs a fresh trigger.'
+        react += ' Into ' + exp_txt + ' expect a pull toward max pain ' + n(mp) + ' and sharper swings in the final session.'
+        rows1.append(('Likely market reaction', react))
+        rows1.append(('Nifty zone to expiry', 'Base case ' + n(lo) + ' to ' + n(hi) + ' (centre ' + n(center) + '); one-standard-deviation range ' + n(spot - sd) + ' to ' + n(spot + sd) + ' using ' + method + '.'))
+        rows1.append(('If it breaks out', 'Close above ' + n(cw) + ' (with FII buying and falling VIX): about ' + n(max(spot + 1.25 * sd, cw + 0.5 * sd)) + '. Close below ' + n(pw) + ' (with FII selling and rising VIX): about ' + n(min(spot - 1.25 * sd, pw - 0.5 * sd)) + '.'))
+    else:
+        rows1.append(('Likely market reaction', 'Not available: option chain (live or last session) or price history could not be fetched.'))
+
+    if events:
+        ev_bits = []
+        for e in (events.get('events') or [])[:2]:
+            ev_bits.append(e['event'] + ' (' + e['date'].strftime('%a %d %b') + '): ' + e['label'].lower() + '. ' + e['react'])
+        for r in (events.get('news') or [])[:1]:
+            ev_bits.append(r['title'] + ': ' + r['label'].lower() + '. ' + r['react'])
+        if ev_bits:
+            rows1.append(('Event risk this week', ' | '.join(ev_bits)))
+
+    # ---- strategy menu
+    if sd and n_sum:
         w = max(100, rnd(sd * 0.5))
         sp = rnd(min(pw, spot - 0.8 * sd))
         sc = rnd(max(cw, spot + 0.8 * sd))
         atm = rnd(spot)
-        if lean == 'flat':
-            quick_idea = 'iron condor'
-            st_txt = 'Iron condor: sell ' + n(sp) + ' put and ' + n(sc) + ' call, buy ' + n(sp - w) + ' put and ' + n(sc + w) + ' call. Profits if Nifty stays between ' + n(sp) + ' and ' + n(sc) + '; max loss is wing width (' + n(w) + ' points) minus credit.'
-        elif lean == 'up':
-            quick_idea = 'bull put spread'
-            st_txt = 'Bull put spread: sell ' + n(sp) + ' put, buy ' + n(sp - w) + ' put. Profits if Nifty stays above ' + n(sp) + '. Directional alternative: bull call spread, buy ' + n(atm) + ' call, sell ' + n(max(rnd(cw), atm + w)) + ' call.'
-        else:
-            quick_idea = 'bear call spread'
-            st_txt = 'Bear call spread: sell ' + n(sc) + ' call, buy ' + n(sc + w) + ' call. Profits if Nifty stays below ' + n(sc) + '. Directional alternative: bear put spread, buy ' + n(atm) + ' put, sell ' + n(min(rnd(pw), atm - w)) + ' put.'
-        rows.append(('Ideal strategy (illustrative)', st_txt + ' Strikes come from the OI walls and implied range; premiums, margin and liquidity are not considered.'))
-        rows.append(('Risk management', 'Cap total loss at 1 to 2% of capital; skip a spread paying under one-third of its width; exit on a close beyond the short strike or the matching wall; close short options before the last afternoon; no naked shorts around events.'))
-        rows.append(('Stand aside if', 'India VIX under about 12, a major scheduled event before expiry, or the range already broken before entry.'))
-    else:
-        rows.append(('Nifty range and strategy', 'Not available: option chain (live or last session) or price history could not be fetched.'))
+        hp, hc = rnd(spot - sd), rnd(spot + sd)
+        mild = abs(score) < 4
+        fit_ic = 'Strong' if lean == 'flat' else ('Moderate' if mild else 'Weak')
+        fit_up = 'Strong' if lean == 'up' else ('Moderate' if lean == 'flat' else 'Weak')
+        fit_dn = 'Strong' if lean == 'down' else ('Moderate' if lean == 'flat' else 'Weak')
+        fit_str = 'Moderate' if (vix_last is not None and vix_last < 14) else 'Weak (premiums rich or no big trigger)'
+        fit_col = 'Strong' if lean in ('flat', 'down') else 'Moderate'
+        strategies = [
+            ('Iron condor (neutral income)', 'Sell ' + n(sp) + ' put and ' + n(sc) + ' call; buy ' + n(sp - w) + ' put and ' + n(sc + w) + ' call', 'Nifty stays between ' + n(sp) + ' and ' + n(sc), 'Capped: ' + n(w) + ' points minus credit', fit_ic),
+            ('Bull put spread (bullish income)', 'Sell ' + n(sp) + ' put; buy ' + n(sp - w) + ' put', 'Nifty stays above ' + n(sp), 'Capped: ' + n(w) + ' points minus credit', fit_up),
+            ('Bear call spread (bearish income)', 'Sell ' + n(sc) + ' call; buy ' + n(sc + w) + ' call', 'Nifty stays below ' + n(sc), 'Capped: ' + n(w) + ' points minus credit', fit_dn),
+            ('Bull call spread (bullish, low cost)', 'Buy ' + n(atm) + ' call; sell ' + n(max(rnd(cw), atm + w)) + ' call', 'Nifty rises toward ' + n(max(rnd(cw), atm + w)), 'Capped: debit paid', fit_up),
+            ('Bear put spread (bearish, low cost)', 'Buy ' + n(atm) + ' put; sell ' + n(min(rnd(pw), atm - w)) + ' put', 'Nifty falls toward ' + n(min(rnd(pw), atm - w)), 'Capped: debit paid', fit_dn),
+            ('Long straddle (big-move bet)', 'Buy ' + n(atm) + ' call and ' + n(atm) + ' put', 'Move beyond the premium paid, either way (event shock)', 'Capped: total premium; decays fast', fit_str),
+            ('Collar (hedge for holders)', 'Hold the index or portfolio; buy ' + n(hp) + ' put, sell ' + n(hc) + ' call', 'Protects below ' + n(hp), 'Loss floored near ' + n(hp) + '; gains capped near ' + n(hc), fit_col),
+        ]
+        rank = {'Strong': 0, 'Moderate': 1}
+        strategies.sort(key=lambda x: rank.get(x[4], 2))
 
-    if events and events.get('events'):
-        hi = events['events'][:5]
-        if hi:
-            rows.append(('Events to watch', '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in hi) + '.'))
-    if events and events.get('news'):
-        lead = [html.escape(r['title']) + ' (' + r['label'].lower() + ')' for r in events['news'][:2]]
-        if lead:
-            rows.append(('News to watch', '; '.join(lead) + '.'))
-    rows.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
-    rows.append(('Note', 'Rule-based reading of public data, not a prediction or investment advice. Test ideas on paper first.'))
-    return rows, bias, score, quick_range, quick_idea
+        if lean == 'up':
+            best = 'Bull put spread: sell ' + n(sp) + ' put, buy ' + n(sp - w) + ' put, plus a collar on the core holding (buy ' + n(hp) + ' put, sell ' + n(hc) + ' call).'
+            why = 'Trend, flows and positioning lean supportive, so I would be paid to buy the index lower than today with a defined loss, and the collar covers a gap-down on what I already own.'
+        elif lean == 'down':
+            best = 'Collar or protective put on the core holding (buy ' + n(hp) + ' put, sell ' + n(hc) + ' call), with an optional bear call spread (sell ' + n(sc) + ' call, buy ' + n(sc + w) + ' call) for income.'
+            why = 'The evidence leans cautious, and an investor\'s first job is protecting capital; hedging costs little compared with a drawdown, and selling the call above the market funds it.'
+        else:
+            best = 'Iron condor (sell ' + n(sp) + ' put and ' + n(sc) + ' call, buy ' + n(sp - w) + ' put and ' + n(sc + w) + ' call), plus a collar on the core holding (buy ' + n(hp) + ' put, sell ' + n(hc) + ' call).'
+            why = 'Signals are balanced and the option walls bracket the market, so time decay works for me inside a defined range, while the collar covers a gap in either direction.'
+        rows2.append(('Best pick if I were an investor', best))
+        rows2.append(('Why this one', why + ' Capped-risk structures let me size small and sleep; I would roll or close before the final afternoon of expiry.'))
+        rows2.append(('Why not the others', 'Straddles need a big move and lose value daily; debit spreads need accurate timing; the rest are valid but fit today\'s view less. I would never sell options naked.'))
+        rows2.append(('Sizing and exits', 'Cap total loss at 1 to 2% of capital; skip a spread paying under one-third of its width; exit on a close beyond the short strike or the matching wall; stand aside if India VIX is under about 12 or a major event is due before expiry.'))
+    else:
+        rows2.append(('Strategies', 'Not available: option chain (live or last session) or volatility data could not be fetched.'))
+
+    rows2.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a big move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
+    rows2.append(('Note', 'Illustrative, rule-based reading of public data; strikes ignore live premiums, margin and liquidity. Not investment advice. Test on paper first.'))
+    return rows1, rows2, strategies, bias, score, quick_range, quick_idea
 
 
 CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111111;margin:0;padding:16px;max-width:1100px;margin:auto}'
@@ -1420,7 +1422,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.card{background:#f5f5f5;border:1px solid #dddddd;border-radius:8px;padding:12px;font-size:14px}'
        '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
-       '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}'
+       '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}.strat td:first-child{width:180px}.strat td:nth-child(2){min-width:230px}'
        '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(2){min-width:260px}.evt td:nth-child(5){min-width:260px}.evt td:nth-child(6){min-width:170px}'
        'ul.quick{margin:4px 0 10px 0;padding-left:20px}ul.quick li{margin:5px 0;line-height:1.5;font-size:14px}'
        '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
@@ -1517,10 +1519,23 @@ def main():
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label, evs)
     if res:
-        rows = res[0]
-        head = tag('tr', tag('th', 'Heading') + tag('th', 'Conclusion'))
-        body = ''.join(tag('tr', tag('td', h) + tag('td', t)) for h, t in rows)
-        page += tag('div', tag('table', head + body, 'concl'), 'scroll')
+        rows1, rows2, strategies = res[0], res[1], res[2]
+
+        def two_col(rows):
+            head = tag('tr', tag('th', 'Heading') + tag('th', 'Conclusion'))
+            body = ''.join(tag('tr', tag('td', h) + tag('td', t)) for h, t in rows)
+            return tag('div', tag('table', head + body, 'concl'), 'scroll')
+        page += two_col(rows1)
+        if strategies:
+            page += tag('h3', 'Derivative strategies on Nifty for the next expiry (illustrative, best fit first)')
+            head = tag('tr', ''.join(tag('th', h) for h in ['Strategy', 'Legs', 'Profits when', 'Maximum loss', 'Fit with today\'s view']))
+            body = ''
+            for nm, legs, works, risk, fit in strategies:
+                cls = 'pos' if fit.startswith('Strong') else ('neg' if fit.startswith('Weak') else '')
+                body += tag('tr', tag('td', nm) + tag('td', legs) + tag('td', works) + tag('td', risk) + tag('td', fit, cls))
+            page += tag('div', tag('table', head + body, 'concl strat'), 'scroll')
+        page += tag('h3', 'Best strategy and risk')
+        page += two_col(rows2)
     else:
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 

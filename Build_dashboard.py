@@ -1,10 +1,14 @@
 import calendar
 import collections
 import datetime as dt
+import email.utils
+import html
 import io
+import json
 import math
 import time
 from io import StringIO
+from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -1001,6 +1005,123 @@ def corporate_events(start, end):
     return out
 
 
+# ---- market-moving news and announcements (automatic, from public news headlines)
+NEWS_THEMES = [
+    ('Trade deals and tariffs', '(trade deal OR tariffs OR "trade talks" OR "trade agreement") (India OR US OR China OR Trump)',
+     'Tariff and trade-deal news moves export sectors (IT, pharma, textiles, autos), the rupee and FII flows.'),
+    ('War, sanctions and geopolitics', '(war OR ceasefire OR sanctions OR "Middle East" OR Russia OR Ukraine OR Iran OR Taiwan) markets',
+     'Conflict raises oil and safe-haven demand, lifts volatility and usually triggers FII selling in emerging markets.'),
+    ('Oil, OPEC and commodities', '(OPEC OR "crude oil" OR Brent OR "oil prices")',
+     'India imports most of its crude; higher oil hurts the rupee, inflation and oil-marketing, paint and aviation stocks.'),
+    ('Central banks and rates', '(Fed OR RBI OR ECB OR "rate cut" OR "rate hike" OR "interest rates")',
+     'Rate expectations drive the dollar, bond yields and foreign flows into Indian equities.'),
+    ('India policy and economy', '(India AND (SEBI OR RBI OR "Union Budget" OR GST OR "Finance Ministry" OR "Sensex" OR "Nifty"))',
+     'Domestic policy and regulatory moves hit sectors directly (banks, NBFCs, derivatives rules, taxes).'),
+    ('US politics and policy', '(Trump OR "White House" OR Congress OR "government shutdown") economy',
+     'US policy shifts move the dollar, yields and global risk appetite.'),
+]
+UPCOMING_WORDS = ('next week', 'this week', 'will meet', 'to meet', 'set to', 'scheduled', 'deadline', 'talks', 'summit',
+                  'expected to', 'due ', 'ahead of', 'to announce', 'will announce', 'visit', 'meeting', 'vote')
+
+CURATED = [
+    # (date, time, region, event, importance, why) - facts checked against published week-ahead calendars
+    (dt.date(2026, 11, 23), 'All day', 'China', 'China-ASEAN Week opens in Chongqing (trade, investment, logistics)', 'Medium',
+     'Regional trade and supply-chain headlines; sentiment for Asian markets.'),
+    (dt.date(2026, 11, 26), 'All day', 'Europe', 'Eurozone leaders meet in Brussels (26-27 Nov) on a successor to ECB President Lagarde', 'Medium',
+     'Leadership at the ECB affects euro and global rate expectations.'),
+    (dt.date(2026, 11, 29), 'Online', 'Global', 'OPEC+ ministers meet on 2027 production targets and quota framework', 'High',
+     'Oil-supply decision; India imports most of its crude, so it affects the rupee, inflation and oil-linked stocks.'),
+]
+
+
+def curated_events(start, end):
+    out = []
+    for d, t, r, name, imp, why in CURATED:
+        if start <= d <= end:
+            out.append(ev(d, t, r, name, imp, why))
+    try:
+        with open('curated_events.json', encoding='utf-8') as fh:
+            for e in json.load(fh):
+                d = dt.date.fromisoformat(e['date'])
+                if start <= d <= end:
+                    out.append(ev(d, e.get('time', 'All day'), e.get('region', 'Global'), e['event'], e.get('importance', 'Medium'), e.get('why')))
+    except Exception:
+        pass
+    return out
+
+
+def fetch_news(query):
+    url = 'https://news.google.com/rss/search?q=' + requests.utils.quote(query + ' when:2d') + '&hl=en-IN&gl=IN&ceid=IN:en'
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    if r.status_code != 200:
+        return []
+    root = ET.fromstring(r.content)
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    out, seen = [], set()
+    for it in root.iter('item'):
+        try:
+            title = (it.findtext('title') or '').strip()
+            src = (it.findtext('source') or '').strip()
+            if src and title.endswith(' - ' + src):
+                title = title[:-(len(src) + 3)]
+            key = title.lower()[:45]
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            pub = email.utils.parsedate_to_datetime(it.findtext('pubDate'))
+            age = (now_utc - pub).total_seconds() / 3600.0
+            if age < -1 or age > 50:
+                continue
+            low = title.lower()
+            out.append({'title': title, 'link': it.findtext('link') or '', 'src': src, 'age': max(age, 0),
+                        'upcoming': any(w in low for w in UPCOMING_WORDS)})
+        except Exception:
+            continue
+    return out
+
+
+def news_by_theme(per_theme=4):
+    res = []
+    for name, query, why in NEWS_THEMES:
+        items = safe(fetch_news, query) or []
+        items = sorted(enumerate(items), key=lambda x: (not x[1]['upcoming'], x[0]))
+        res.append({'theme': name, 'why': why, 'items': [i for _, i in items[:per_theme]]})
+    return res
+
+
+def age_text(h):
+    return (str(int(h)) + 'h ago') if h < 24 else (str(int(h // 24)) + 'd ago')
+
+
+def news_table(news):
+    rows = []
+    for blk in news:
+        for i, it in enumerate(blk['items']):
+            link = LT + 'a href=' + Q + html.escape(it['link'], quote=True) + Q + ' target=' + Q + '_blank' + Q + ' rel=' + Q + 'noopener' + Q + GT + html.escape(it['title']) + LT + '/a' + GT
+            rows.append([(blk['theme'] if i == 0 else '', 'hi'), (link, ''), (html.escape(it['src']), ''), (age_text(it['age']), ''),
+                         ('Upcoming' if it['upcoming'] else 'Developing', 'hi' if it['upcoming'] else ''),
+                         (blk['why'] if i == 0 else '', '')])
+    if not rows:
+        return tag('p', 'Live headlines could not be fetched this morning.', 'na')
+    head = tag('tr', ''.join(tag('th', h) for h in ['Theme', 'Headline', 'Source', 'Age', 'Type', 'Why markets care']))
+    body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
+    return tag('div', tag('table', head + body, 'evt news'), 'scroll')
+
+
+def news_analysis(news):
+    out = []
+    for blk in news:
+        if blk['items']:
+            top = blk['items'][0]
+            out.append(blk['theme'] + ': ' + str(len(blk['items'])) + (' live story' if len(blk['items']) == 1 else ' live stories') + '; lead story: ' + html.escape(top['title']) + ' (' + html.escape(top['src']) + ', ' + age_text(top['age']) + ').')
+    up = [i for b in news for i in b['items'] if i['upcoming']]
+    if up:
+        out.append(str(len(up)) + ' stories point to something still to happen (talks, meetings, deadlines, announcements); these are the ones to watch for a market reaction.')
+    if out:
+        out.append('Headlines are collected automatically and ranked by keywords, so read them as a radar, not a verdict. Open the story before acting on it.')
+    return out
+
+
 def build_events():
     start = dt.datetime.now(IST).date()
     end = start + dt.timedelta(days=6)
@@ -1009,7 +1130,7 @@ def build_events():
     for fn in (lambda: expiry_events(start, end, hol), lambda: holiday_events(start, end, hol),
                lambda: us_holiday_events(start, end), lambda: india_data_events(start, end),
                lambda: central_bank_events(start, end), lambda: global_feed(start, end),
-               lambda: corporate_events(start, end)):
+               lambda: corporate_events(start, end), lambda: curated_events(start, end)):
         got = safe(fn)
         if got:
             rows.extend(got)
@@ -1021,18 +1142,19 @@ def build_events():
             uniq.append(e)
     order = {'High': 0, 'Medium': 1, 'Low': 2}
     uniq.sort(key=lambda e: (e['date'], '00:00' if e['time'] in ('All day', 'Varies') else e['time'], order.get(e['imp'], 3)))
-    return {'start': start, 'end': end, 'events': uniq}
+    return {'start': start, 'end': end, 'events': uniq, 'news': safe(news_by_theme) or []}
 
 
 def events_table(evs):
     rows = []
     for e in evs['events']:
         rows.append([(e['date'].strftime('%a %d %b'), ''), (e['time'], ''), (e['region'], ''), (e['event'], ''),
-                     (e['imp'], 'hi' if e['imp'] == 'High' else ''), (e['fp'], ''), (e['why'], '')])
+                     (e['imp'], 'hi' if e['imp'] == 'High' else ''), (e['why'], '')])
     if not rows:
-        return tag('p', 'No major events found for the next 7 days.', 'na')
-    return tag('div', tag('table', tag('tr', ''.join(tag('th', h) for h in ['Date (IST)', 'Time (IST)', 'Region', 'Event', 'Importance', 'Forecast / previous', 'Why it matters'])) +
-                          ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows), 'evt'), 'scroll')
+        return tag('p', 'No scheduled catalysts found for the next 7 days.', 'na')
+    head = tag('tr', ''.join(tag('th', h) for h in ['Date (IST)', 'Time (IST)', 'Region', 'Event', 'Importance', 'Why it matters']))
+    body = ''.join(tag('tr', ''.join(tag('td', t, c) for t, c in r)) for r in rows)
+    return tag('div', tag('table', head + body, 'evt'), 'scroll')
 
 
 def events_analysis(evs):
@@ -1245,6 +1367,10 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
         hi = [e for e in events['events'] if e['imp'] == 'High'][:5]
         if hi:
             rows.append(('Events to watch', '; '.join(e['event'] + ' (' + e['date'].strftime('%a %d %b') + ')' for e in hi) + '.'))
+    if events and events.get('news'):
+        lead = [b['theme'] + ': ' + html.escape(b['items'][0]['title']) for b in events['news'][:2] if b['items']]
+        if lead:
+            rows.append(('News to watch', '; '.join(lead) + '.'))
     rows.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a large move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
     rows.append(('Note', 'Rule-based reading of public data, not a prediction or investment advice. Test ideas on paper first.'))
     return rows, bias, score, quick_range, quick_idea
@@ -1263,7 +1389,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.analysis{background:#f7f7f7;border-left:4px solid #111111;border-radius:4px;padding:8px 14px;margin:8px 0 14px 0;font-size:14px}'
        '.analysis b{color:#111111}.analysis p{margin:8px 0;line-height:1.6}.analysis ul{margin:6px 0;padding-left:20px}.analysis li{margin:5px 0;line-height:1.5}'
        '.concl td{white-space:normal;line-height:1.5;vertical-align:top}.concl td:first-child{font-weight:600;width:200px}'
-       '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(4){min-width:200px}.evt td:nth-child(7){min-width:240px}'
+       '.evt td{white-space:normal;vertical-align:top;line-height:1.4;min-width:90px}.evt td:nth-child(4){min-width:200px}.evt td:nth-child(6){min-width:240px}.news td:nth-child(2){min-width:320px}'
        '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
@@ -1349,11 +1475,18 @@ def main():
 
     evs = safe(build_events)
     if evs:
-        page += tag('h2', 'Event calendar: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
-        page += tag('p', 'Times are IST. Global rows come from a public economic calendar; RBI and Fed dates are from their official schedules; India data dates follow the usual release pattern, so confirm exact timings before trading.', 'src')
+        page += tag('h2', 'Market-moving events: next 7 days (' + evs['start'].strftime('%d %b') + ' to ' + evs['end'].strftime('%d %b') + ')')
+        page += tag('h3', 'Live news and announcements that can move markets (last 48 hours)')
+        page += tag('p', 'Collected automatically from public news headlines at each refresh. Click a headline to read the story.', 'src')
+        if evs.get('news'):
+            page += news_table(evs['news']) + note(safe(news_analysis, evs['news']) or [])
+        else:
+            page += tag('p', 'Live headlines could not be fetched this morning.', 'na')
+        page += tag('h3', 'Scheduled catalysts (times in IST)')
+        page += tag('p', 'Expiries, holidays, central-bank dates and major meetings. RBI and Fed dates are from official schedules; India data dates follow the usual release pattern, so confirm timing before trading.', 'src')
         page += events_table(evs) + note(safe(events_analysis, evs) or [])
     else:
-        page += tag('h2', 'Event calendar: next 7 days') + tag('p', 'Event calendar could not be built this morning.', 'na')
+        page += tag('h2', 'Market-moving events: next 7 days') + tag('p', 'Events could not be built this morning.', 'na')
 
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label, evs)

@@ -1245,6 +1245,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
             method = '14-day ATR ' + n(atr)
 
     rows1, rows2, strategies = [], [], []
+    writer, rows3 = [], []
     quick_range = quick_idea = ''
     exp_txt = (str(exp_str) + (' (' + exp_date.strftime('%a') + ')' if exp_date else '')) if exp_str else 'the next expiry'
 
@@ -1305,6 +1306,7 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
         ]
         rank = {'Strong': 0, 'Moderate': 1}
         strategies.sort(key=lambda x: rank.get(x[4], 2))
+        rank = {'Strong': 0, 'Moderate': 1, 'Weak': 2}
 
         if lean == 'up':
             best = 'Bull put spread: sell ' + n(sp) + ' put, buy ' + n(sp - w) + ' put, plus a collar on the core holding (buy ' + n(hp) + ' put, sell ' + n(hc) + ' call).'
@@ -1319,12 +1321,72 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
         rows2.append(('Why this one', why + ' Capped-risk structures let me size small and sleep; I would roll or close before the final afternoon of expiry.'))
         rows2.append(('Why not the others', 'Straddles need a big move and lose value daily; debit spreads need accurate timing; the rest are valid but fit today\'s view less. I would never sell options naked.'))
         rows2.append(('Sizing and exits', 'Cap total loss at 1 to 2% of capital; skip a spread paying under one-third of its width; exit on a close beyond the short strike or the matching wall; stand aside if India VIX is under about 12 or a major event is due before expiry.'))
+        # ---- option-writer strategies (premium sellers)
+        sp_w = rnd(min(pw, spot - 1.0 * sd))
+        sc_w = rnd(max(cw, spot + 1.0 * sd))
+        high_ev = [e for e in ((events or {}).get('events') or []) if e['imp'] == 'High']
+        steps = ['Strong', 'Moderate', 'Weak']
+
+        def down(fit, note_txt):
+            i = min(steps.index(fit.split(' ')[0]) + 1, 2)
+            return steps[i] + ' (' + note_txt + ')'
+
+        base_ic = 'Strong' if lean == 'flat' else ('Moderate' if mild else 'Weak')
+        fit_naked = base_ic
+        if vix_last is not None and vix_last < 12:
+            fit_naked = down(fit_naked, 'thin premiums')
+        if high_ev and fit_naked.startswith('Strong'):
+            fit_naked = down(fit_naked, 'major event ahead')
+        fit_sd = 'Moderate' if (lean == 'flat' and vix_last is not None and vix_last >= 15) else 'Weak'
+        fit_fly = 'Moderate' if lean == 'flat' else 'Weak'
+        fit_cc = 'Strong' if lean == 'flat' else 'Moderate'
+        writer = [
+            ('Iron condor (defined risk)', 'Sell ' + n(sp_w) + ' put and ' + n(sc_w) + ' call; buy ' + n(sp_w - w) + ' put and ' + n(sc_w + w) + ' call', 'Nifty expires between ' + n(sp_w) + ' and ' + n(sc_w), 'Capped: ' + n(w) + ' points minus credit', fit_ic),
+            ('Bull put spread (defined risk)', 'Sell ' + n(sp_w) + ' put; buy ' + n(sp_w - w) + ' put', 'Nifty stays above ' + n(sp_w), 'Capped: ' + n(w) + ' points minus credit', fit_up),
+            ('Bear call spread (defined risk)', 'Sell ' + n(sc_w) + ' call; buy ' + n(sc_w + w) + ' call', 'Nifty stays below ' + n(sc_w), 'Capped: ' + n(w) + ' points minus credit', fit_dn),
+            ('Short strangle (naked)', 'Sell ' + n(sp_w) + ' put and ' + n(sc_w) + ' call, no hedge', 'Nifty expires between ' + n(sp_w) + ' and ' + n(sc_w), 'Unlimited both sides; heavy margin', fit_naked),
+            ('Short straddle (naked)', 'Sell ' + n(atm) + ' call and ' + n(atm) + ' put, no hedge', 'Nifty finishes near ' + n(atm), 'Unlimited both sides; highest premium, needs tight control', fit_sd),
+            ('Iron butterfly', 'Sell ' + n(atm) + ' call and put; buy ' + n(atm + 2 * w) + ' call and ' + n(atm - 2 * w) + ' put', 'Nifty pins near ' + n(atm), 'Capped: ' + n(2 * w) + ' points minus credit', fit_fly),
+            ('Jade lizard (bullish-neutral)', 'Sell ' + n(sp_w) + ' put; sell ' + n(sc_w) + ' call and buy ' + n(sc_w + w) + ' call', 'Nifty stays above ' + n(sp_w) + '; no upside risk if the credit exceeds ' + n(w) + ' points', 'Large below ' + n(sp_w) + ' (put is naked)', fit_up),
+            ('Short put at support (cash-secured)', 'Sell ' + n(sp_w) + ' put', 'Nifty stays above ' + n(sp_w), 'Large if Nifty falls below ' + n(sp_w) + '; margin heavy', fit_up),
+            ('Covered call (for holders)', 'Hold the index or portfolio; sell ' + n(hc) + ' call', 'Nifty stays below ' + n(hc), 'Index falls, cushioned by the premium; upside capped', fit_cc),
+        ]
+        writer.sort(key=lambda x: rank.get(x[4].split(' ')[0], 2))
+
+        if lean == 'up':
+            wbest = 'Bull put spread: sell ' + n(sp_w) + ' put and buy ' + n(sp_w - w) + ' put. Optional: add a far call spread (sell ' + n(rnd(max(cw, spot + 1.3 * sd))) + ' call, buy ' + n(rnd(max(cw, spot + 1.3 * sd)) + w) + ' call) to make it a bullish-skewed iron condor.'
+        elif lean == 'down':
+            wbest = 'Bear call spread: sell ' + n(sc_w) + ' call and buy ' + n(sc_w + w) + ' call. Optional: add a far put spread (sell ' + n(rnd(min(pw, spot - 1.3 * sd))) + ' put, buy ' + n(rnd(min(pw, spot - 1.3 * sd)) - w) + ' put) to make it a bearish-skewed iron condor.'
+        else:
+            wbest = 'Iron condor: sell ' + n(sp_w) + ' put and ' + n(sc_w) + ' call; buy ' + n(sp_w - w) + ' put and ' + n(sc_w + w) + ' call.'
+        if vix_last is None:
+            env = 'India VIX not available; treat premiums as unknown.'
+        elif vix_last >= 16:
+            env = 'India VIX ' + format(vix_last, '.1f') + ' is rich: selling pays well, but it is rich because risk is higher, so keep size smaller.'
+        elif vix_last >= 13:
+            env = 'India VIX ' + format(vix_last, '.1f') + ' is fair: normal premium for normal risk.'
+        else:
+            env = 'India VIX ' + format(vix_last, '.1f') + ' is thin: selling pays little for the risk, so prefer defined-risk structures, smaller size, or wait.'
+        rows3.append(('Best pick if I were an option writer', wbest))
+        rows3.append(('Why this one', 'Time decay earns the premium while Nifty stays inside the range; the sold strikes sit outside the one-standard-deviation zone (' + n(spot - sd) + ' to ' + n(spot + sd) + ') and behind the option walls (' + n(pw) + ' and ' + n(cw) + '), and the bought wings cap the loss on a gap. I choose defined risk because one bad gap erases many months of premium.'))
+        rows3.append(('Premium environment', env))
+        rows3.append(('Strike selection', 'Sell outside the one-standard-deviation range and behind the OI walls, roughly 15 to 20 delta; buy wings ' + n(w) + ' points further out.'))
+        rows3.append(('Entry timing', 'Enter when India VIX is calm or falling, not on a high-impact event day' + ((' (next: ' + high_ev[0]['event'] + ', ' + high_ev[0]['date'].strftime('%a %d %b') + ')') if high_ev else '') + '. Decay is fastest in the last 2 to 3 sessions, but so is gamma risk.'))
+        rows3.append(('Adjustments and exits', 'Book profit at 50 to 70% of the maximum; exit if Nifty closes beyond a short strike or the matching OI wall; roll the untested side closer only in a calm market; never average a losing short.'))
+        rows3.append(('Capital and risk', 'Cap the maximum loss per trade at 1 to 2% of capital; check the broker margin calculator; keep margin use under about 30 to 40% of capital to survive a gap. Hedged structures need far less margin than naked ones.'))
+        rows3.append(('Expiry-day rule', 'Short options carry the most gamma risk on expiry day; close or hedge shorts by early afternoon and do not hold naked shorts into the last hour.'))
+        rows3.append(('What I would avoid', 'Naked short straddles when VIX is low, selling calls into a strong uptrend without a hedge, selling inside the one-standard-deviation range without wings, and adding to a losing short.'))
+
     else:
         rows2.append(('Strategies', 'Not available: option chain (live or last session) or volatility data could not be fetched.'))
 
+    if not (sd and n_sum):
+        rows3.append(('Strategies', 'Not available: option chain (live or last session) or volatility data could not be fetched.'))
+    rows3.append(('Note', 'Illustrative, rule-based reading of public data; strikes ignore live premiums, margin and liquidity. Option selling can lose far more than the premium received. Not investment advice.'))
+
     rows2.append(('What would change the view', 'Reversal in FII cash flows or index futures, India VIX up more than about 10%, a big move in crude or the dollar, a close beyond either option wall, or a break below the 50-day average.'))
     rows2.append(('Note', 'Illustrative, rule-based reading of public data; strikes ignore live premiums, margin and liquidity. Not investment advice. Test on paper first.'))
-    return rows1, rows2, strategies, bias, score, quick_range, quick_idea
+    return rows1, rows2, strategies, bias, score, quick_range, quick_idea, writer, rows3
 
 
 CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111111;margin:0;padding:16px;max-width:1100px;margin:auto}'
@@ -1401,23 +1463,6 @@ def main():
     else:
         page += tag('h2', 'Derivatives positions by participant') + tag('p', 'NSE participant file could not be fetched.', 'na')
 
-    exp = n_sum['Nearest expiry'] if n_sum else 'unavailable'
-    page += tag('h2', 'Open interest: Nifty 50 vs Sensex (nearest expiry ' + str(exp) + ')')
-    if n_sum:
-        srcs = 'Data source. Nifty: ' + str(n_label) + '.'
-        if s_sum:
-            srcs += ' Sensex: ' + str(s_label) + '.'
-        page += tag('p', srcs, 'src')
-        if 'Last trading' in str(n_label) or 'Last trading' in str(s_label):
-            page += tag('p', 'The live option chain was not available, so the figures marked as last trading session are the closing open interest of that day.', 'na')
-        page += table_html(oi_compare(n_sum, s_sum))
-        if s_sum is None:
-            page += tag('p', 'Sensex option data could not be fetched from BSE, either live or from the last trading session.', 'na')
-        page += note((safe(oi_analysis, 'Nifty', n_sum, ctx_n['chg_pct'] if ctx_n else None) or []) +
-                     (safe(oi_analysis, 'Sensex', s_sum, ctx_s['chg_pct'] if ctx_s else None) or []))
-    else:
-        page += tag('p', 'NSE option chain could not be fetched, either live or from the last trading session.', 'na')
-
     page += tag('h2', 'Moving averages (SMA and EMA)')
     for name, _ in INDICES:
         last, df = ma_table(hist[name])
@@ -1436,7 +1481,7 @@ def main():
     page += tag('h2', 'Overall conclusion and next-expiry view')
     res = safe(conclusion, cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label, evs)
     if res:
-        rows1, rows2, strategies = res[0], res[1], res[2]
+        rows1, rows2, strategies, writer, rows3 = res[0], res[1], res[2], res[7], res[8]
 
         def two_col(rows):
             head = tag('tr', tag('th', 'Heading') + tag('th', 'Conclusion'))
@@ -1451,8 +1496,18 @@ def main():
                 cls = 'pos' if fit.startswith('Strong') else ('neg' if fit.startswith('Weak') else '')
                 body += tag('tr', tag('td', nm) + tag('td', legs) + tag('td', works) + tag('td', risk) + tag('td', fit, cls))
             page += tag('div', tag('table', head + body, 'concl strat'), 'scroll')
-        page += tag('h3', 'Best strategy and risk')
+        page += tag('h3', 'Best strategy and risk as an investor')
         page += two_col(rows2)
+        if writer:
+            page += tag('h3', 'Option-writer strategies on Nifty for the next expiry (illustrative, best fit first)')
+            head = tag('tr', ''.join(tag('th', h) for h in ['Strategy', 'Legs', 'Profits when', 'Risk', 'Fit with today\'s view']))
+            body = ''
+            for nm, legs, works, risk, fit in writer:
+                cls = 'pos' if fit.startswith('Strong') else ('neg' if fit.startswith('Weak') else '')
+                body += tag('tr', tag('td', nm) + tag('td', legs) + tag('td', works) + tag('td', risk) + tag('td', fit, cls))
+            page += tag('div', tag('table', head + body, 'concl strat'), 'scroll')
+        page += tag('h3', 'Best strategy and risk as an option writer')
+        page += two_col(rows3)
     else:
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 

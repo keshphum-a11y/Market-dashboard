@@ -1407,6 +1407,22 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
        '.hi{font-weight:700}.na{color:#b45309}.src{font-size:13px;color:#555555;margin:4px 0}')
 
 
+PARTICIPANT_WHY = [
+    'Why it matters: these tables show who is betting on which direction with real money. Derivative positions often move before the index does, so they work as an early signal for Nifty and Sensex.',
+    'FII (foreign institutions): the biggest and most-watched group. A growing net long is supportive; a growing net short is a warning.',
+    'DII (domestic institutions): mostly hedge their equity portfolios, so read their numbers as protection, not as a market view.',
+    'Client (retail and individuals): the crowd mood. It is often on the wrong side at turning points, so look at where it disagrees with FIIs.',
+    'Pro (proprietary traders and brokers): arbitrage and market-making desks; largely a balancing item against the other three.',
+    'Index futures: a direct bet on the index. Net long is bullish, net short is bearish.',
+    'Index call options: buying calls is bullish; selling calls expects the market to stay below a level.',
+    'Index put options: buying puts is bearish or a hedge; selling puts is bullish because the seller expects support. That is why put colours are reversed.',
+    'Stock futures: bets on individual stocks; broad net buying shows confidence in the stock market, not just the index.',
+    'Change in longs and shorts: Added means new positions were opened, Closed means they were exited. Longs added with shorts closed is the strongest bullish combination; the reverse is the strongest bearish one.',
+    'Net bought / sold: the day\'s net change. Positive means the group became more bullish today.',
+    'Net position: total longs minus shorts. Compare the three sessions to see whether the stance is building or fading.',
+]
+
+
 def main():
     now = dt.datetime.now(IST).strftime('%d %b %Y, %H:%M IST')
     cash = safe(fii_dii_cash)
@@ -1460,6 +1476,7 @@ def main():
             if t:
                 page += tag('h3', seg) + t
         page += note(safe(participant_analysis, pdata, files) or [])
+        page += note(PARTICIPANT_WHY, 'Why this section matters, in plain words')
     else:
         page += tag('h2', 'Derivatives positions by participant') + tag('p', 'NSE participant file could not be fetched.', 'na')
 

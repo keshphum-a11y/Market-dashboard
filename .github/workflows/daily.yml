@@ -1,10 +1,14 @@
 name: Daily market dashboard
 
 on:
+  schedule:
+    # GitHub cron runs in UTC and is often delayed by 10 to 45 minutes.
+    # 23:45 UTC = 5:15 AM IST, so the page is ready by 6:00 AM IST.
+    - cron: '45 23 * * *'
+    # Backup run in case the first is skipped: 00:15 UTC = 5:45 AM IST.
+    - cron: '15 0 * * *'
   push:
     branches: [main]
-  schedule:
-    - cron: '30 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -13,17 +17,22 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install yfinance pandas requests
-      - run: python Build_dashboard.py
-      - name: Save the new page
+      - name: Install packages
+        run: pip install yfinance pandas requests
+      - name: Build dashboard
+        env:
+          TZ: Asia/Kolkata
+        run: python Build_dashboard.py
+      - name: Commit index.html
         run: |
-          git config user.name 'dashboard-bot'
-          git config user.email 'bot@users.noreply.github.com'
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
           git add index.html
-          git commit -m 'Daily update' || echo 'No changes'
+          git diff --cached --quiet || git commit -m "Daily dashboard refresh"
           git push

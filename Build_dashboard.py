@@ -7,6 +7,7 @@ import io
 import json
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -723,6 +724,79 @@ def nse_index_history(index_name='NIFTY 50', chunks=3):
     return h if len(h) >= 250 else None
 
 
+ARCHIVE = {'days': 0, 'data': {}}
+
+
+def nse_close_file(d):
+    """One day's official NSE index close file (all indices). Returns {name: (open, high, low, close)} or None."""
+    url = 'https://nsearchives.nseindia.com/content/indices/ind_close_all_' + d.strftime('%d%m%Y') + '.csv'
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=12)
+        if r.status_code != 200 or len(r.text) < 200:
+            return None
+        df = pd.read_csv(StringIO(r.text))
+        df.columns = [str(c).strip().lower() for c in df.columns]
+
+        def col(key):
+            return next((c for c in df.columns if key in c), None)
+        ncol, ocol, hcol, lcol, ccol = col('index name'), col('open'), col('high'), col('low'), col('clos')
+        if ncol is None or ccol is None:
+            return None
+        names = df[ncol].astype(str).str.strip().str.lower()
+        out = {}
+        for nm in ('nifty 50', 'india vix'):
+            row = df[names == nm]
+            if not len(row):
+                continue
+            vals = []
+            for c in (ocol, hcol, lcol, ccol):
+                vals.append(pd.to_numeric(row[c].iloc[0], errors='coerce') if c else float('nan'))
+            if vals[3] == vals[3] and vals[3] > 0:
+                c_ = float(vals[3])
+                out[nm] = tuple(float(v) if v == v and v > 0 else c_ for v in vals)
+        return out or None
+    except Exception:
+        return None
+
+
+def nse_archive(cal_days=900):
+    """Daily closes for Nifty 50 and India VIX from NSE's own archive files, fetched in parallel."""
+    if ARCHIVE['days'] >= cal_days and ARCHIVE['data']:
+        return ARCHIVE['data']
+    today = dt.datetime.now(IST).date()
+    days = [today - dt.timedelta(days=i) for i in range(cal_days + 1)]
+    days = [d for d in days if d.weekday() < 5]
+    if not any(nse_close_file(d) for d in days[:8]):      # quick probe so a blocked host fails fast
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(nse_close_file, days))
+    rows = {'nifty 50': [], 'india vix': []}
+    for d, res in zip(days, results):
+        for nm in rows:
+            if res and nm in res:
+                o, h, l, c = res[nm]
+                rows[nm].append({'Date': pd.Timestamp(d), 'Open': o, 'High': h, 'Low': l, 'Close': c})
+    data = {}
+    for nm, lst in rows.items():
+        if lst:
+            data[nm] = pd.DataFrame(lst).drop_duplicates('Date').sort_values('Date').set_index('Date')
+    ARCHIVE['days'], ARCHIVE['data'] = cal_days, data
+    return data
+
+
+def nse_archive_nifty():
+    h = nse_archive(900).get('nifty 50')
+    return h if h is not None and len(h) >= 250 else None
+
+
+def nse_vix():
+    """(last, previous) India VIX close from NSE's archive, or None."""
+    v = nse_archive(15).get('india vix')
+    if v is None or len(v) < 2:
+        return None
+    return float(v['Close'].iloc[-1]), float(v['Close'].iloc[-2])
+
+
 def yahoo_history(symbol):
     h = yf.Ticker(symbol).history(period='3y').dropna(subset=['High', 'Low', 'Close'])
     if getattr(h.index, 'tz', None) is not None:
@@ -737,11 +811,14 @@ def yahoo_history(symbol):
 
 
 def get_history(symbol):
-    """Daily history for an index. Nifty uses NSE's official closes when available."""
+    """Daily history for an index. Nifty uses NSE's official closes (API, then NSE archive files); Sensex is a BSE index, so Yahoo."""
     h, src = None, ''
     if symbol == '^NSEI':
         h = safe(nse_index_history, 'NIFTY 50')
         src = 'NSE official index closes'
+        if h is None:
+            h = safe(nse_archive_nifty)
+            src = 'NSE official index close files'
     if h is None:
         h = safe(yahoo_history, symbol)
         src = 'Yahoo Finance'
@@ -843,12 +920,20 @@ def market_context(h):
 
 
 # ================= DOLLAR, CRUDE, VOLATILITY =================
+VIX_SRC = ['Yahoo Finance']
+
+
 def extra_table():
     rows = []
     for name, sym in EXTRA.items():
         try:
-            h = yf.Ticker(sym).history(period='10d')['Close'].dropna()
-            last, prev = float(h.iloc[-1]), float(h.iloc[-2])
+            nv = safe(nse_vix) if name == 'India VIX' else None
+            if nv:
+                last, prev = nv
+                VIX_SRC[0] = 'NSE official close'
+            else:
+                h = yf.Ticker(sym).history(period='10d')['Close'].dropna()
+                last, prev = float(h.iloc[-1]), float(h.iloc[-2])
             rows.append({'Name': name, 'Last': round(last, 2), 'Change': round(last - prev, 2), 'Change %': round((last / prev - 1) * 100, 2)})
         except Exception:
             pass
@@ -1561,7 +1646,7 @@ def main():
             cap = tag('p', 'Based on closing prices up to ' + info[1] + ' (' + str(info[2]) + ' trading days, source: ' + info[0] + '). Charts on NSE or broker apps during market hours include today\'s live price, so they differ from this table until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
-    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + note(safe(extra_analysis, extra) or [])
+    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, Brent and USD/INR: Yahoo Finance (not traded on NSE).', 'src') + note(safe(extra_analysis, extra) or [])
 
     evs = safe(build_events)
     if evs:

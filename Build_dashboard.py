@@ -1100,9 +1100,9 @@ def india_data_events(start, end):
             (shift_fwd(dt.date(y, m, 14)), 'India WPI inflation', 'Medium'),
             (shift_fwd(dt.date(y, m, 15)), 'India trade data (exports, imports)', 'Medium'),
             (shift_fwd(dt.date(y, m, 28)), 'India IIP industrial output', 'Medium'),
-            (last_weekday_of_month(y, m), 'India fiscal deficit (CGA data)', 'Low'),
+            (last_weekday_of_month(y, m), 'India fiscal deficit (CGA data)', 'Medium'),
             (nth_working_day(y, m, 1), 'India manufacturing PMI', 'Medium'),
-            (nth_working_day(y, m, 1), 'India GST collections and auto sales', 'Low'),
+            (nth_working_day(y, m, 1), 'India GST collections and auto sales', 'Medium'),
             (nth_working_day(y, m, 3), 'India services PMI', 'Medium'),
         ]
         if m in (2, 5, 8, 11):
@@ -1182,6 +1182,18 @@ def corporate_events(start, end):
 # ---- India-focused market-moving events
 # (keywords, label, how Indian markets could react, sectors to watch). First match wins.
 REACT = [
+    (('expiry',), 'Two-way',
+     'Option decay peaks and hedging unwinds; intraday swings widen and price tends to gravitate toward max pain', 'Nifty, Bank Nifty, Sensex, index options'),
+    (('msci',), 'Two-way',
+     'Index funds rebalance at the close, so passive inflows or outflows hit stocks that are added or removed; the closing auction is volatile', 'Stocks added to or dropped from MSCI India, banks, large caps'),
+    (('auto sales',), 'Two-way',
+     'Strong volumes (festive and post-GST-cut demand) lift autos and ancillaries; a miss hits them', 'Maruti, M&M, Tata Motors, Bajaj Auto, Hero, auto ancillaries'),
+    (('india manufacturing pmi', 'india services pmi'), 'Two-way',
+     'Above 50 shows expansion and supports cyclicals; a sharp fall raises growth worries', 'Capital goods, autos, banks, infra'),
+    (('fiscal deficit', 'core sector', 'iip'), 'Two-way',
+     'Shows how fast the economy and government finances are moving; a beat supports cyclicals and bonds, a miss weighs on them', 'Capital goods, infra, cement, banks, bond yields'),
+    (('msci india', 'rbi policy decision'), 'Two-way',
+     'Positioning builds before the decision: rate-cut hopes lift banks, realty and autos; a hawkish hold weighs on them', 'Bank Nifty, NBFCs, realty, autos, 10-year yield'),
     (('india cpi', 'india wpi', 'india inflation', 'retail inflation'), 'Two-way',
      'Low inflation raises rate-cut hopes (bullish); a hot print is bearish', 'Banks, NBFCs, realty, bond yields'),
     (('india gdp', 'gdp (quarterly)'), 'Two-way',
@@ -1224,6 +1236,7 @@ CURATED = [
     (dt.date(2026, 11, 26), '00:30', 'US', 'US Fed Beige Book (regional economy read ahead of the December meeting)', 'Medium'),
     (dt.date(2026, 11, 26), '18:00', 'Europe', 'ECB minutes of the October meeting', 'Medium'),
     (dt.date(2026, 11, 26), 'All day', 'Europe', 'Special European Council (26-27 Nov); ECB president succession on the agenda', 'Medium'),
+    (dt.date(2026, 11, 30), 'After close', 'India', 'MSCI November index review takes effect after the close (passive rebalancing flows in Indian stocks)', 'High'),
     (dt.date(2026, 11, 29), 'Online', 'Global', 'OPEC+ ministers meet on 2027 production targets and quota framework', 'High'),
 ]
 
@@ -1256,8 +1269,10 @@ def build_events():
     start = dt.datetime.now(IST).date()
     end = start + dt.timedelta(days=6)
     rows = []
+    hol = safe(nse_holidays) or dict(KNOWN_HOLIDAYS)
     for fn in (lambda: curated_events(start, end), lambda: central_bank_events(start, end),
-               lambda: [e for e in india_data_events(start, end) if e['imp'] == 'High'],
+               lambda: [e for e in india_data_events(start, end) if e['imp'] in ('High', 'Medium')],
+               lambda: expiry_events(start, end, hol), lambda: holiday_events(start, end, hol),
                lambda: [e for e in global_feed(start, end) if e['imp'] == 'High']):
         got = safe(fn)
         if got:

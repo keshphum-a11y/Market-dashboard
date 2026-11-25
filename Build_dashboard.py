@@ -1269,10 +1269,8 @@ def build_events():
     start = dt.datetime.now(IST).date()
     end = start + dt.timedelta(days=6)
     rows = []
-    hol = safe(nse_holidays) or dict(KNOWN_HOLIDAYS)
     for fn in (lambda: curated_events(start, end), lambda: central_bank_events(start, end),
-               lambda: [e for e in india_data_events(start, end) if e['imp'] in ('High', 'Medium')],
-               lambda: expiry_events(start, end, hol), lambda: holiday_events(start, end, hol),
+               lambda: [e for e in india_data_events(start, end) if e['imp'] == 'High'],
                lambda: [e for e in global_feed(start, end) if e['imp'] == 'High']):
         got = safe(fn)
         if got:

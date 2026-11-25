@@ -666,12 +666,101 @@ def oi_analysis(name, s, chg_pct=None):
 
 
 # ================= MOVING AVERAGES =================
-def get_history(symbol):
+HIST_INFO = {}
+
+
+def parse_nse_history(data):
+    """Turn NSE's historical index JSON into a DataFrame of Date, High, Low, Close (or None)."""
     try:
-        h = yf.Ticker(symbol).history(period='2y').dropna(subset=['High', 'Low', 'Close'])
-        return h if len(h) >= 30 else None
+        d = data['data']
+        recs = d.get('indexCloseOnlineRecords') if isinstance(d, dict) else d
+        df = pd.DataFrame(recs)
+        if df.empty:
+            return None
+
+        def find(key, avoid=()):
+            for c in df.columns:
+                lc = str(c).lower()
+                if key in lc and not any(a in lc for a in avoid):
+                    return c
+            return None
+        dcol = find('timestamp') or find('date')
+        ccol = find('close', ('prev',))
+        hcol, lcol = find('high'), find('low')
+        if dcol is None or ccol is None:
+            return None
+        out = pd.DataFrame({'Date': pd.to_datetime(df[dcol], errors='coerce', utc=True).dt.tz_localize(None).dt.normalize(),
+                            'Close': pd.to_numeric(df[ccol], errors='coerce')})
+        out['High'] = pd.to_numeric(df[hcol], errors='coerce') if hcol else out['Close']
+        out['Low'] = pd.to_numeric(df[lcol], errors='coerce') if lcol else out['Close']
+        return out.dropna(subset=['Date', 'Close'])
     except Exception:
         return None
+
+
+def nse_index_history(index_name='NIFTY 50', chunks=3):
+    """Official NSE daily index closes, fetched in ~1 year pieces."""
+    end = dt.datetime.now(IST).date()
+    frames = []
+    for i in range(chunks):
+        start = end - dt.timedelta(days=360)
+        base = ('?indexType=' + requests.utils.quote(index_name) + '&from=' + start.strftime('%d-%m-%Y') + '&to=' + end.strftime('%d-%m-%Y'))
+        data = nse_get('https://www.nseindia.com/api/historicalOR/indicesHistory' + base)
+        part = parse_nse_history(data) if data else None
+        if part is None or part.empty:
+            data = nse_get('https://www.nseindia.com/api/historical/indicesHistory' + base) if i == 0 else None
+            part = parse_nse_history(data) if data else None
+        if part is None or part.empty:
+            if i == 0:
+                return None
+            break
+        frames.append(part)
+        end = start - dt.timedelta(days=1)
+    if not frames:
+        return None
+    h = pd.concat(frames).drop_duplicates('Date').sort_values('Date').set_index('Date')
+    h = h[h['Close'] > 0]
+    return h if len(h) >= 250 else None
+
+
+def yahoo_history(symbol):
+    h = yf.Ticker(symbol).history(period='3y').dropna(subset=['High', 'Low', 'Close'])
+    if getattr(h.index, 'tz', None) is not None:
+        h.index = h.index.tz_localize(None)
+    h.index = h.index.normalize()
+    h = h[~h.index.duplicated(keep='last')]
+    h = h[h['Close'] > 0]
+    now = dt.datetime.now(IST)
+    if len(h) and h.index[-1].date() == now.date() and now.hour < 16:
+        h = h.iloc[:-1]      # today's candle is still forming, so use the last completed close
+    return h
+
+
+def get_history(symbol):
+    """Daily history for an index. Nifty uses NSE's official closes when available."""
+    h, src = None, ''
+    if symbol == '^NSEI':
+        h = safe(nse_index_history, 'NIFTY 50')
+        src = 'NSE official index closes'
+    if h is None:
+        h = safe(yahoo_history, symbol)
+        src = 'Yahoo Finance'
+    if h is None or len(h) < 30:
+        return None
+    HIST_INFO[symbol] = (src, h.index[-1].strftime('%d %b %Y'), len(h))
+    return h
+
+
+def ema_last(close, p):
+    """Standard EMA: smoothing 2/(p+1), seeded with the simple average of the first p closes."""
+    v = [float(x) for x in close]
+    if len(v) < p:
+        return float('nan')
+    k = 2.0 / (p + 1)
+    e = sum(v[:p]) / p
+    for x in v[p:]:
+        e = x * k + e * (1 - k)
+    return e
 
 
 def ma_table(h):
@@ -683,7 +772,7 @@ def ma_table(h):
         rows = []
         for p in PERIODS:
             sma = float(c.rolling(p).mean().iloc[-1])
-            ema = float(c.ewm(span=p, adjust=False).mean().iloc[-1])
+            ema = ema_last(c, p)
             rows.append({'Period (days)': p, 'SMA': round(sma, 2), 'Price vs SMA (%)': round((last / sma - 1) * 100, 2),
                          'EMA': round(ema, 2), 'Price vs EMA (%)': round((last / ema - 1) * 100, 2)})
         return round(last, 2), pd.DataFrame(rows)
@@ -1464,9 +1553,13 @@ def main():
         page += tag('h2', 'Derivatives positions by participant') + tag('p', 'NSE participant file could not be fetched.', 'na')
 
     page += tag('h2', 'Moving averages (SMA and EMA)')
-    for name, _ in INDICES:
+    for name, sym in INDICES:
         last, df = ma_table(hist[name])
-        page += tag('h3', name) + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
+        info = HIST_INFO.get(sym)
+        cap = ''
+        if info:
+            cap = tag('p', 'Based on closing prices up to ' + info[1] + ' (' + str(info[2]) + ' trading days, source: ' + info[0] + '). Charts on NSE or broker apps during market hours include today\'s live price, so they differ from this table until the close.', 'src')
+        page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
     page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + note(safe(extra_analysis, extra) or [])
 

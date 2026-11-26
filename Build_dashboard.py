@@ -21,7 +21,7 @@ import yfinance as yf
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 LT, GT, Q = chr(60), chr(62), chr(34)
 PERIODS = [10, 20, 50, 100, 200]
-EXTRA = {'Dollar Index': 'DX-Y.NYB', 'Brent Crude': 'BZ=F', 'India VIX': '^INDIAVIX', 'USD/INR': 'INR=X'}
+EXTRA = {'Dollar Index': 'DX-Y.NYB', 'US 10Y Yield': '^TNX', 'Brent Crude': 'BZ=F', 'India VIX': '^INDIAVIX', 'USD/INR': 'INR=X'}
 INDICES = [('Nifty 50', '^NSEI'), ('Sensex', '^BSESN')]
 WHO = ['FII', 'DII', 'Client', 'Pro']
 
@@ -986,6 +986,8 @@ def extra_table():
             else:
                 h = yf.Ticker(sym).history(period='10d')['Close'].dropna()
                 last, prev = float(h.iloc[-1]), float(h.iloc[-2])
+                if name == 'US 10Y Yield' and last > 20:      # some feeds quote the yield times 10
+                    last, prev = last / 10, prev / 10
             rows.append({'Name': name, 'Last': round(last, 2), 'Change': round(last - prev, 2), 'Change %': round((last / prev - 1) * 100, 2)})
         except Exception:
             pass
@@ -1009,6 +1011,11 @@ def extra_analysis(df):
         head = nm + ' ' + d + ' ' + format(abs(c), '.2f') + '% to ' + format(last, '.2f') + '. '
         if nm == 'Dollar Index':
             out.append(head + ('Stronger dollar: usually FII selling and rupee weakness, a headwind.' if c > 0 else 'Weaker dollar: eases liquidity, favours emerging-market inflows, a tailwind.'))
+        elif nm == 'US 10Y Yield':
+            bps = round(float(r['Change']) * 100)
+            lvl = 'high, a strong rival to emerging-market equities' if last >= 4.5 else ('elevated, keeps pressure on foreign flows' if last >= 4.0 else 'moderate, less competition for emerging-market equities')
+            out.append('US 10-year yield ' + ('rose ' if c > 0 else 'fell ') + str(abs(bps)) + ' bps to ' + format(last, '.2f') + '%. Level is ' + lvl + '. '
+                       + ('Rising yields pull money back to US bonds: usually FII selling, a headwind, most for IT, banks and rate-sensitive stocks.' if c > 0 else 'Falling yields push money toward emerging markets: usually FII buying, a tailwind.'))
         elif nm == 'Brent Crude':
             out.append(head + ('Higher crude widens India import bill and inflation, a headwind.' if c > 0 else 'Lower crude helps the rupee, inflation and margins, a tailwind.'))
         elif nm == 'India VIX':
@@ -1016,6 +1023,14 @@ def extra_analysis(df):
             out.append(head + 'Level is ' + lvl + '. Rising VIX with a falling index means fear; falling VIX with a rising index means a comfortable uptrend.')
         elif nm == 'USD/INR':
             out.append(head + ('Weaker rupee: tends to come with FII selling; helps IT and pharma exporters.' if c > 0 else 'Firmer rupee: tends to come with foreign inflows; a tailwind for the broad market.'))
+    dxy_c, y_c = extra_value(df, 'Dollar Index', 'Change %'), extra_value(df, 'US 10Y Yield', 'Change %')
+    if dxy_c is not None and y_c is not None:
+        if dxy_c > 0 and y_c > 0:
+            out.append('Dollar and US yields are both rising: the toughest backdrop for FII flows and the rupee.')
+        elif dxy_c < 0 and y_c < 0:
+            out.append('Dollar and US yields are both falling: the friendliest backdrop for FII flows and the rupee.')
+        else:
+            out.append('Dollar and US yields are pulling in different directions: a mixed global signal, so lean on domestic flows.')
     return out
 
 
@@ -1443,6 +1458,9 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
             add(-1, 'Nifty is below its 20, 50 and 200 day averages')
     st['cat'] = 'Macro'
     dxy, brent, vixc = extra_value(extra, 'Dollar Index', 'Change %'), extra_value(extra, 'Brent Crude', 'Change %'), extra_value(extra, 'India VIX', 'Change %')
+    ychg = extra_value(extra, 'US 10Y Yield', 'Change')
+    if ychg is not None and abs(ychg) >= 0.05:
+        add(-0.5 if ychg > 0 else 0.5, 'the US 10-year yield ' + ('rose' if ychg > 0 else 'fell'))
     if dxy is not None and abs(dxy) > 0.3:
         add(-0.5 if dxy > 0 else 0.5, 'the dollar index ' + ('rose' if dxy > 0 else 'fell'))
     if brent is not None and abs(brent) > 1.5:
@@ -1722,7 +1740,7 @@ def main():
             cap = tag('p', cap + ' Charts during market hours include today\'s live price, so they differ until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
-    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, Brent and USD/INR: Yahoo Finance (not traded on NSE).', 'src') + note(safe(extra_analysis, extra) or [])
+    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, US 10-year yield, Brent and USD/INR: Yahoo Finance (not traded on NSE).', 'src') + note(safe(extra_analysis, extra) or [])
 
     evs = safe(build_events)
     if evs:

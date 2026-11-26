@@ -6,6 +6,7 @@ import html
 import io
 import json
 import math
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
@@ -840,18 +841,60 @@ def ema_last(close, p):
     return e
 
 
-def ma_table(h):
+TRENDLYNE = {'^NSEI': 'https://trendlyne.com/equity/technical-analysis/NIFTY50/1887/nifty-50/',
+             '^BSESN': 'https://trendlyne.com/equity/technical-analysis/BSESENSEX/4482/bse-sensex/'}
+MA_SRC = {}
+
+
+def trendlyne_ma(symbol):
+    """SMA (and EMA, if the page carries it) values published on Trendlyne's technical page for the index."""
+    url = TRENDLYNE.get(symbol)
+    if not url:
+        return None
+    hdr = dict(HEADERS)
+    hdr['Accept'] = 'text/html,application/xhtml+xml'
+    hdr['Referer'] = 'https://trendlyne.com/'
+    for _ in range(2):
+        try:
+            r = requests.get(url, headers=hdr, timeout=25)
+            if r.status_code == 200 and len(r.text) > 5000:
+                text = re.sub(r'(?is)<(script|style).*?</\1>', ' ', r.text)
+                text = html.unescape(re.sub(r'<[^>]+>', ' ', text))
+                vals = {}
+                for per, kind, v in re.findall(r'(\d{1,3})\s*Day\s*(SMA|EMA)\s*:?\s*([\d,]+(?:\.\d+)?)', text):
+                    vals.setdefault((kind, int(per)), float(v.replace(',', '')))
+                if all(('SMA', q) in vals for q in PERIODS):
+                    m = re.search(r'(\d{1,2} \w{3},? \d{4},? \d{1,2}:\d{2} ?[AP]M)', text)
+                    return {'vals': vals, 'when': m.group(1) if m else ''}
+        except Exception:
+            pass
+        time.sleep(3)
+    return None
+
+
+def ma_table(h, tl=None, sym=None):
+    """Moving averages. SMA/EMA come from Trendlyne when available; otherwise from our own calculation on the closes."""
     if h is None:
         return None, None
     try:
         c = h['Close']
         last = float(c.iloc[-1])
-        rows = []
+        rows, diffs, tl_ema = [], [], False
         for p in PERIODS:
             sma = float(c.rolling(p).mean().iloc[-1])
             ema = ema_last(c, p)
+            if tl:
+                t = tl['vals'].get(('SMA', p))
+                if t:
+                    diffs.append(abs(t / sma - 1) * 100)
+                    sma = t
+                te = tl['vals'].get(('EMA', p))
+                if te:
+                    ema, tl_ema = te, True
             rows.append({'Period (days)': p, 'SMA': round(sma, 2), 'Price vs SMA (%)': round((last / sma - 1) * 100, 2),
                          'EMA': round(ema, 2), 'Price vs EMA (%)': round((last / ema - 1) * 100, 2)})
+        if sym:
+            MA_SRC[sym] = {'tl': bool(tl), 'ema': tl_ema, 'diff': max(diffs) if diffs else None, 'when': tl['when'] if tl else ''}
         return round(last, 2), pd.DataFrame(rows)
     except Exception:
         return None, None
@@ -1652,11 +1695,22 @@ def main():
 
     page += tag('h2', 'Moving averages (SMA and EMA)')
     for name, sym in INDICES:
-        last, df = ma_table(hist[name])
+        tl = safe(trendlyne_ma, sym)
+        last, df = ma_table(hist[name], tl, sym)
         info = HIST_INFO.get(sym)
+        src = MA_SRC.get(sym) or {}
         cap = ''
         if info:
-            cap = tag('p', 'Based on closing prices up to ' + info[1] + ' (' + str(info[2]) + ' trading days, source: ' + info[0] + '). Charts on NSE or broker apps during market hours include today\'s live price, so they differ from this table until the close.', 'src')
+            if src.get('tl'):
+                cap = ('SMA from Trendlyne' + (' (updated ' + src['when'] + ')' if src.get('when') else '') + '; EMA '
+                       + ('from Trendlyne' if src.get('ema') else 'calculated from ' + info[0] + ' closes')
+                       + '. Price is the last close, ' + info[1] + '.')
+                if src.get('diff') is not None:
+                    cap += ' Our own SMA from ' + info[0] + ' differs from Trendlyne by up to ' + format(src['diff'], '.2f') + '%.'
+            else:
+                cap = ('Trendlyne could not be reached, so SMA and EMA are calculated from closing prices up to ' + info[1]
+                       + ' (' + str(info[2]) + ' trading days, source: ' + info[0] + ').')
+            cap = tag('p', cap + ' Charts during market hours include today\'s live price, so they differ until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
     page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, Brent and USD/INR: Yahoo Finance (not traded on NSE).', 'src') + note(safe(extra_analysis, extra) or [])

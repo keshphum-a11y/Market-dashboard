@@ -729,11 +729,20 @@ ARCHIVE = {'days': 0, 'data': {}}
 
 
 def nse_close_file(d):
-    """One day's official NSE index close file (all indices). Returns {name: (open, high, low, close)} or None."""
+    """One day's official NSE index close file (all indices). Returns {name: (open, high, low, close)} or None.
+    A 404 means NSE had no session that day; any other failure is retried so a day is not silently dropped."""
     url = 'https://nsearchives.nseindia.com/content/indices/ind_close_all_' + d.strftime('%d%m%Y') + '.csv'
+    r = None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=12)
+            if r.status_code == 200 or r.status_code in (403, 404):
+                break
+        except Exception:
+            r = None
+        time.sleep(1.5 * (attempt + 1))
     try:
-        r = requests.get(url, headers=HEADERS, timeout=12)
-        if r.status_code != 200 or len(r.text) < 200:
+        if r is None or r.status_code != 200 or len(r.text) < 200:
             return None
         df = pd.read_csv(StringIO(r.text))
         df.columns = [str(c).strip().lower() for c in df.columns]
@@ -766,8 +775,8 @@ def nse_archive(cal_days=900):
         return ARCHIVE['data']
     today = dt.datetime.now(IST).date()
     days = [today - dt.timedelta(days=i) for i in range(cal_days + 1)]
-    days = [d for d in days if d.weekday() < 5]
-    if not any(nse_close_file(d) for d in days[:8]):      # quick probe so a blocked host fails fast
+    # all seven days: NSE sometimes trades on a weekend (Diwali Muhurat session, special Saturday sessions)
+    if not any(nse_close_file(d) for d in days[:4]):      # quick probe so a blocked host fails fast
         return {}
     with ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(nse_close_file, days))
@@ -854,9 +863,9 @@ def trendlyne_ma(symbol):
     hdr = dict(HEADERS)
     hdr['Accept'] = 'text/html,application/xhtml+xml'
     hdr['Referer'] = 'https://trendlyne.com/'
-    for _ in range(2):
+    for _ in range(1):
         try:
-            r = requests.get(url, headers=hdr, timeout=25)
+            r = requests.get(url, headers=hdr, timeout=15)
             if r.status_code == 200 and len(r.text) > 5000:
                 text = re.sub(r'(?is)<(script|style).*?</\1>', ' ', r.text)
                 text = html.unescape(re.sub(r'<[^>]+>', ' ', text))
@@ -1708,8 +1717,8 @@ def main():
                 if src.get('diff') is not None:
                     cap += ' Our own SMA from ' + info[0] + ' differs from Trendlyne by up to ' + format(src['diff'], '.2f') + '%.'
             else:
-                cap = ('Trendlyne could not be reached, so SMA and EMA are calculated from closing prices up to ' + info[1]
-                       + ' (' + str(info[2]) + ' trading days, source: ' + info[0] + ').')
+                cap = ('Trendlyne could not be reached from the build server, so SMA and EMA are calculated from closing prices up to ' + info[1]
+                       + ' (' + str(info[2]) + ' sessions, source: ' + info[0] + ').')
             cap = tag('p', cap + ' Charts during market hours include today\'s live price, so they differ until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 

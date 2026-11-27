@@ -1,3 +1,4 @@
+import base64
 import calendar
 import collections
 import datetime as dt
@@ -8,6 +9,7 @@ import json
 import math
 import re
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from xml.etree import ElementTree as ET
@@ -141,6 +143,30 @@ def safe(fn, *args):
         return None
 
 
+# The last good data is stored inside index.html itself (an HTML comment), so a run that NSE blocks can fall back to it
+CACHE = {}
+STALE = {}
+NET_FAIL = [0]
+
+
+def load_cache():
+    try:
+        with open('index.html', encoding='utf-8') as f:
+            m = re.search(r'<!--CACHE:([A-Za-z0-9+/=]+)-->', f.read())
+        if m:
+            CACHE.update(json.loads(zlib.decompress(base64.b64decode(m.group(1))).decode('utf-8')))
+    except Exception:
+        pass
+
+
+def dump_cache():
+    try:
+        raw = base64.b64encode(zlib.compress(json.dumps(CACHE).encode('utf-8'), 9)).decode('ascii')
+        return '<!--CACHE:' + raw + '-->'
+    except Exception:
+        return ''
+
+
 def nse_get(url, tries=3):
     s = requests.Session()
     s.headers.update(HEADERS)
@@ -159,14 +185,19 @@ def nse_get(url, tries=3):
 # ================= FII / DII CASH =================
 def fii_dii_cash():
     data = nse_get('https://www.nseindia.com/api/fiidiiTradeReact')
-    if not data:
-        return None
-    rows = []
-    for r in data:
-        rows.append({'Category': r['category'], 'Date': r['date'],
-                     'Buy (Rs cr)': float(r['buyValue']), 'Sell (Rs cr)': float(r['sellValue']),
-                     'Net (Rs cr)': float(r['netValue'])})
-    return pd.DataFrame(rows)
+    if data:
+        rows = []
+        for r in data:
+            rows.append({'Category': r['category'], 'Date': r['date'],
+                         'Buy (Rs cr)': float(r['buyValue']), 'Sell (Rs cr)': float(r['sellValue']),
+                         'Net (Rs cr)': float(r['netValue'])})
+        CACHE['cash'] = {'rows': rows, 'when': dt.datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}
+        return pd.DataFrame(rows)
+    c = CACHE.get('cash')
+    if c and c.get('rows'):
+        STALE['cash'] = c.get('when', '')
+        return pd.DataFrame(c['rows'])
+    return None
 
 
 def cash_split(df):
@@ -209,17 +240,27 @@ def cash_analysis(df):
 
 # ================= PARTICIPANT DERIVATIVES =================
 def load_participant_file(d):
-    url = ('https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_'
-           + d.strftime('%d%m%Y') + '.csv')
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=20)
-        if r.status_code == 200 and len(r.text) > 100:
-            df = pd.read_csv(StringIO(r.text), skiprows=1)
+    key = d.strftime('%d%m%Y')
+    store = CACHE.setdefault('participant', {})
+    text = store.get(key)                       # a published file never changes, so a cached copy is final
+    if text is None and NET_FAIL[0] < 3:
+        url = 'https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_' + key + '.csv'
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if r.status_code == 200 and len(r.text) > 100:
+                text = r.text
+                store[key] = text
+                NET_FAIL[0] = 0
+        except Exception:
+            NET_FAIL[0] += 1
+    if text:
+        try:
+            df = pd.read_csv(StringIO(text), skiprows=1)
             df.columns = [c.strip() for c in df.columns]
             df['Client Type'] = df['Client Type'].astype(str).str.strip()
             return df
-    except Exception:
-        pass
+        except Exception:
+            return None
     return None
 
 
@@ -769,17 +810,32 @@ def nse_close_file(d):
         return None
 
 
-def nse_archive(cal_days=900):
-    """Daily closes for Nifty 50 and India VIX from NSE's own archive files, fetched in parallel."""
+def nse_archive(cal_days=720):
+    """Daily closes for Nifty 50 and India VIX from NSE's own archive files. Only days not already cached are fetched."""
     if ARCHIVE['days'] >= cal_days and ARCHIVE['data']:
         return ARCHIVE['data']
     today = dt.datetime.now(IST).date()
-    days = [today - dt.timedelta(days=i) for i in range(cal_days + 1)]
+    cached = {}
+    for nm, rows in (CACHE.get('archive') or {}).items():
+        try:
+            df = pd.DataFrame(rows, columns=['Date', 'Open', 'High', 'Low', 'Close'])
+            df['Date'] = pd.to_datetime(df['Date'])
+            cached[nm] = df.set_index('Date')
+        except Exception:
+            pass
+    nif = cached.get('nifty 50')
+    if nif is not None and len(nif) >= 250:
+        start = nif.index[-1].date() + dt.timedelta(days=1)
+    else:
+        start, cached = today - dt.timedelta(days=cal_days), {}
     # all seven days: NSE sometimes trades on a weekend (Diwali Muhurat session, special Saturday sessions)
-    if not any(nse_close_file(d) for d in days[:4]):      # quick probe so a blocked host fails fast
-        return {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        results = list(ex.map(nse_close_file, days))
+    days = [start + dt.timedelta(days=i) for i in range((today - start).days + 1)]
+    if len(days) > 30 and not any(nse_close_file(d) for d in sorted(days, reverse=True)[:4]):
+        days = []                                           # blocked: fail fast
+    results = []
+    if days:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            results = list(ex.map(nse_close_file, days))
     rows = {'nifty 50': [], 'india vix': []}
     for d, res in zip(days, results):
         for nm in rows:
@@ -787,15 +843,20 @@ def nse_archive(cal_days=900):
                 o, h, l, c = res[nm]
                 rows[nm].append({'Date': pd.Timestamp(d), 'Open': o, 'High': h, 'Low': l, 'Close': c})
     data = {}
-    for nm, lst in rows.items():
-        if lst:
-            data[nm] = pd.DataFrame(lst).drop_duplicates('Date').sort_values('Date').set_index('Date')
+    for nm in rows:
+        parts = [x for x in (cached.get(nm), pd.DataFrame(rows[nm]).set_index('Date') if rows[nm] else None) if x is not None]
+        if parts:
+            df = pd.concat(parts)
+            data[nm] = df[~df.index.duplicated(keep='last')].sort_index().tail(800)
+    if data:
+        CACHE['archive'] = {nm: [[i.strftime('%Y-%m-%d')] + [round(float(v), 2) for v in r] for i, r in zip(df.index, df[['Open', 'High', 'Low', 'Close']].values)]
+                            for nm, df in data.items()}
     ARCHIVE['days'], ARCHIVE['data'] = cal_days, data
     return data
 
 
 def nse_archive_nifty():
-    h = nse_archive(900).get('nifty 50')
+    h = nse_archive(720).get('nifty 50')
     return h if h is not None and len(h) >= 250 else None
 
 
@@ -1707,6 +1768,7 @@ CSS = ('body{font-family:Segoe UI,Arial,sans-serif;background:#ffffff;color:#111
 
 
 def main():
+    load_cache()
     now = dt.datetime.now(IST).strftime('%d %b %Y, %H:%M IST')
     cash = safe(fii_dii_cash)
     files = safe(last_files, 3)
@@ -1745,7 +1807,7 @@ def main():
     page += tag('h2', 'How to read this page')
     page += LT + 'div class=' + Q + 'grid' + Q + GT + ''.join(tag('div', tag('b', t) + LT + 'br' + GT + d, 'card') for t, d in LEGEND) + LT + '/div' + GT
 
-    page += tag('h2', 'FII and DII cash market flows') + table_html(cash, ('Net (Rs cr)',)) + note(safe(cash_analysis, cash) or [])
+    page += tag('h2', 'FII and DII cash market flows') + (tag('p', 'NSE could not be reached in this run, so this is the last successful fetch (' + STALE['cash'] + ').', 'na') if STALE.get('cash') else '') + table_html(cash, ('Net (Rs cr)',)) + note(safe(cash_analysis, cash) or [])
 
     if files and pdata:
         title = 'Derivatives positions by participant (' + files[0][0] + (', compared with ' + files[1][0] if len(files) > 1 else '') + ')'
@@ -1826,6 +1888,10 @@ def main():
         page += tag('p', 'Conclusion could not be built this morning.', 'na')
 
     page += tag('p', 'Data from NSE, BSE and Yahoo Finance public pages. Figures may be delayed or missing. For study only, not trading advice.', 'na')
+    pk = CACHE.get('participant') or {}
+    for k in sorted(pk, key=lambda x: x[4:] + x[2:4] + x[:2])[:-8]:
+        pk.pop(k, None)
+    page += dump_cache()
     page += LT + '/body' + GT + LT + '/html' + GT
     with open('index.html', 'w', encoding='utf-8') as f:
         f.write(page)

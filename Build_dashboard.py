@@ -975,6 +975,37 @@ def market_context(h):
 VIX_SRC = ['Yahoo Finance']
 
 
+MONTH_CODES = 'FGHJKMNQUVXZ'
+
+
+def last_business_day(y, m):
+    d = dt.date(y + (m == 12), m % 12 + 1, 1) - dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def brent_contract(today=None):
+    """Nearest Brent futures contract that has not expired. Brent expires on the last business day of the
+    second month before its delivery month (the December contract expired at the end of October)."""
+    today = today or dt.datetime.now(IST).date()
+    y, m = today.year, today.month
+    for k in range(0, 8):
+        dm = (m - 1 + k) % 12 + 1
+        dy = y + (m - 1 + k) // 12
+        em = dm - 2
+        ey = dy
+        if em < 1:
+            em += 12
+            ey -= 1
+        if last_business_day(ey, em) > today:
+            return 'BZ' + MONTH_CODES[dm - 1] + str(dy)[2:] + '.NYM', dt.date(dy, dm, 1).strftime('%b %Y')
+    return None, None
+
+
+BRENT_NOTE = ['Brent Crude: Yahoo continuous front-month price']
+
+
 def extra_table():
     rows = []
     for name, sym in EXTRA.items():
@@ -984,11 +1015,22 @@ def extra_table():
                 last, prev = nv
                 VIX_SRC[0] = 'NSE official close'
             else:
-                h = yf.Ticker(sym).history(period='10d')['Close'].dropna()
+                h = None
+                if name == 'Brent Crude':
+                    csym, clab = brent_contract()
+                    try:
+                        hc = yf.Ticker(csym).history(period='10d')['Close'].dropna() if csym else None
+                        if hc is not None and len(hc) >= 2 and hc.iloc[-1] > 0:
+                            h = hc
+                            BRENT_NOTE[0] = 'Brent Crude: ' + clab + ' futures, the nearest contract that has not expired'
+                    except Exception:
+                        h = None
+                if h is None:
+                    h = yf.Ticker(sym).history(period='10d')['Close'].dropna()
                 last, prev = float(h.iloc[-1]), float(h.iloc[-2])
                 if name == 'US 10Y Yield' and last > 20:      # some feeds quote the yield times 10
                     last, prev = last / 10, prev / 10
-            rows.append({'Name': name, 'Last': round(last, 2), 'Change': round(last - prev, 2), 'Change %': round((last / prev - 1) * 100, 2)})
+            rows.append({'Name': name, 'Last': round(last, 2), 'Previous close': round(prev, 2), 'Change': round(last - prev, 2), 'Change %': round((last / prev - 1) * 100, 2)})
         except Exception:
             pass
     return pd.DataFrame(rows) if rows else None
@@ -1740,7 +1782,7 @@ def main():
             cap = tag('p', cap + ' Charts during market hours include today\'s live price, so they differ until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
-    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, US 10-year yield, Brent and USD/INR: Yahoo Finance (not traded on NSE).', 'src') + note(safe(extra_analysis, extra) or [])
+    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, US 10-year yield, Brent and USD/INR: Yahoo Finance (not traded on NSE). ' + BRENT_NOTE[0] + '. Previous close is the session before the latest one.', 'src') + note(safe(extra_analysis, extra) or [])
 
     evs = safe(build_events)
     if evs:

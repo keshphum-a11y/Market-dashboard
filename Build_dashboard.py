@@ -1529,6 +1529,28 @@ def days_to_expiry(exp):
         return None, None
 
 
+def last_close_date():
+    """Date of the last completed Nifty session, the day the spot and VIX in the page were taken."""
+    info = HIST_INFO.get('^NSEI')
+    if info:
+        try:
+            return dt.datetime.strptime(info[1], '%d %b %Y').date()
+        except Exception:
+            pass
+    now = dt.datetime.now(IST)
+    d = now.date() if now.hour >= 16 else now.date() - dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def vol_days(exp_date):
+    """Calendar days from the last close to expiry, plus 1 (same convention as the analyst's own sheet)."""
+    if not exp_date:
+        return None
+    return max((exp_date - last_close_date()).days + 1, 1)
+
+
 def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, events=None):
     bull, bear = [], []
     st = {'score': 0.0, 'cat': 'Flows', 'cats': {}}
@@ -1628,8 +1650,9 @@ def conclusion(cash, pdata, n_sum, s_sum, ctx_n, ctx_s, extra, n_label=None, eve
     method = ''
     if spot:
         if vix_last is not None and 5 < vix_last < 60:
-            sd = spot * (vix_last / 100.0) * math.sqrt(max(dte if dte is not None else 1, 1) / 365.0)
-            method = 'India VIX ' + format(vix_last, '.1f')
+            vdays = vol_days(exp_date)
+            sd = spot * (vix_last / 100.0) * math.sqrt(max(vdays if vdays is not None else 1, 1) / 365.0)
+            method = 'India VIX ' + format(vix_last, '.1f') + ' over ' + str(vdays if vdays is not None else 1) + ' days (last close to expiry, plus 1)'
         elif atr:
             days = max(round((dte if dte is not None else 1) * 5 / 7), 1)
             sd = atr * math.sqrt(days)

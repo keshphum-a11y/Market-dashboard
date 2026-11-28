@@ -630,9 +630,15 @@ def oi_summary(df, spot):
         cl = ((k - near['Strike']).clip(lower=0) * near['Call OI']).sum()
         pl = ((near['Strike'] - k).clip(lower=0) * near['Put OI']).sum()
         pain[k] = cl + pl
-    # walls: largest put OI at or below spot (floor), largest call OI at or above spot (ceiling)
-    below = near[near['Strike'] <= spot] if spot else near
-    above = near[near['Strike'] >= spot] if spot else near
+    # walls: largest put OI at or below spot (floor), largest call OI at or above spot (ceiling),
+    # looking only within 3.5% of spot so a far round-number strike (such as 27,000) is not shown as the ceiling
+    band = 0.035 * spot if spot else None
+    below = near[(near['Strike'] <= spot) & (near['Strike'] >= spot - band)] if spot else near
+    above = near[(near['Strike'] >= spot) & (near['Strike'] <= spot + band)] if spot else near
+    if len(below) == 0 or below['Put OI'].max() <= 0:
+        below = near[near['Strike'] <= spot] if spot else near
+    if len(above) == 0 or above['Call OI'].max() <= 0:
+        above = near[near['Strike'] >= spot] if spot else near
     if len(below) == 0:
         below = near
     if len(above) == 0:
@@ -1067,12 +1073,37 @@ def brent_contract(today=None):
 BRENT_NOTE = ['Brent Crude: Yahoo continuous front-month price']
 
 
+def usd_inr_reference():
+    """USD/INR (rupees per dollar) and the previous day's value from the ECB reference series via Frankfurter.
+    Yahoo's INR=X can sit well away from the onshore close, so this is tried first."""
+    start = (dt.datetime.now(IST).date() - dt.timedelta(days=12)).isoformat()
+    for base in ('https://api.frankfurter.dev/v1', 'https://api.frankfurter.app'):
+        try:
+            r = requests.get(base + '/' + start + '..?base=USD&symbols=INR', timeout=15)
+            if r.status_code != 200:
+                continue
+            rates = r.json()['rates']
+            days = sorted(rates)
+            if len(days) >= 2:
+                return float(rates[days[-1]]['INR']), float(rates[days[-2]]['INR']), days[-1]
+        except Exception:
+            continue
+    return None
+
+
+FX_NOTE = ['USD/INR: Yahoo Finance']
+
+
 def extra_table():
     rows = []
     for name, sym in EXTRA.items():
         try:
             nv = safe(nse_vix) if name == 'India VIX' else None
-            if nv:
+            fx = safe(usd_inr_reference) if name == 'USD/INR' else None
+            if fx:
+                last, prev = fx[0], fx[1]
+                FX_NOTE[0] = 'USD/INR (rupees per dollar): ECB reference rate for ' + fx[2] + ', which tracks the onshore interbank close closely but can differ from the RBI/FBIL rate by a few paise'
+            elif nv:
                 last, prev = nv
                 VIX_SRC[0] = 'NSE official close'
             else:
@@ -1844,7 +1875,7 @@ def main():
             cap = tag('p', cap + ' Charts during market hours include today\'s live price, so they differ until the close.', 'src')
         page += tag('h3', name) + cap + table_html(df, ('Price vs SMA (%)', 'Price vs EMA (%)')) + note(safe(ma_analysis, name, last, df) or [])
 
-    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, US 10-year yield, Brent and USD/INR: Yahoo Finance (not traded on NSE). ' + BRENT_NOTE[0] + '. Previous close is the session before the latest one.', 'src') + note(safe(extra_analysis, extra) or [])
+    page += tag('h2', 'Dollar, crude and volatility') + table_html(extra, ('Change', 'Change %')) + tag('p', 'India VIX: ' + VIX_SRC[0] + '. Dollar Index, US 10-year yield and Brent: Yahoo Finance (not traded on NSE). ' + BRENT_NOTE[0] + '. Previous close is the session before the latest one.', 'src') + note(safe(extra_analysis, extra) or [])
 
     evs = safe(build_events)
     if evs:
